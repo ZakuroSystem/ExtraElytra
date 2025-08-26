@@ -35,6 +35,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private NamespacedKey HP_KEY;
     private NamespacedKey FUEL_KEY;
     private NamespacedKey FUEL_CAP_KEY;
+    private NamespacedKey LIFE_TOTAL_KEY;
+    private NamespacedKey LIFE_USED_KEY;
+    private NamespacedKey LIFE_REPAIRED_KEY;
 
     // --- Defaults (config overrideable) ---
     private static final double DEFAULT_BASE_MASS_KG = 70.0;
@@ -94,9 +97,19 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private boolean FUEL_BULK_CHARGE_ON_SNEAK;
     private int FUEL_MAX_SETS_PER_CLICK;
 
+    // life config
+    private boolean LIFE_ENABLED;
+    private boolean LIFE_PREFER_REPAIR_WHEN_BROKEN;
+    private boolean LIFE_BULK_REPAIR_ON_SNEAK;
+    private int LIFE_MAX_SETS_PER_CLICK;
+    private Material LIFE_REPAIR_MATERIAL;
+    private int LIFE_MINUTES_PER_ITEM;
+    private double LIFE_NOTIFY_COOLDOWN_SECS;
+
     // state
     private final Map<UUID, ArrayDeque<Vector>> velHistoryMps = new HashMap<>();
     private final Map<UUID, Long> lastFuelNotify = new HashMap<>();
+    private final Map<UUID, Long> lastLifeNotify = new HashMap<>();
     private long tickCounter = 0L;
 
     private static final Pattern HP_PATTERN = Pattern.compile("(?i)(?:hp|馬力)[:：]?\\s*([0-9]+(?:\\.[0-9]+)?)");
@@ -111,6 +124,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         HP_KEY = new NamespacedKey(this, "horsepower");
         FUEL_KEY = new NamespacedKey(this, "fuel");
         FUEL_CAP_KEY = new NamespacedKey(this, "fuelcap");
+        LIFE_TOTAL_KEY = new NamespacedKey(this, "life_total_min");
+        LIFE_USED_KEY = new NamespacedKey(this, "life_used_sec");
+        LIFE_REPAIRED_KEY = new NamespacedKey(this, "life_repaired_min");
 
         saveDefaultConfig();
         reloadFromConfig();
@@ -160,13 +176,30 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 double cdA = CDA_BASE_M2 * DRAG_MULTIPLIER * scale;
                 double aDrag = (0.5 * rho * cdA * speedMps * speedMps) / massKg;
 
-                // thrust (sneak -> 0), fuel gate
+                // thrust (sneak -> 0), fuel & life gate
                 boolean thrustAllowed = (hp > 0.0) && !p.isSneaking();
                 if (FUEL_ENABLED && thrustAllowed) {
                     int fuel = getFuel(engine);
                     if (fuel <= 0) {
                         thrustAllowed = false;
                         notifyFuelHint(p);
+                    }
+                }
+                if (LIFE_ENABLED && thrustAllowed) {
+                    int total = getLifeTotal(engine);
+                    if (total > 0) {
+                        int repaired = getLifeRepaired(engine);
+                        int usedTicks = getLifeUsedTicks(engine);
+                        int remain = total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0);
+                        if (remain <= 0) {
+                            thrustAllowed = false;
+                            notifyLifeHint(p);
+                        } else if (tickCounter % sampleTicks == 0) {
+                            usedTicks += sampleTicks;
+                            setLifeUsedTicks(engine, usedTicks);
+                            int remainAfter = total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0);
+                            if (remainAfter <= 0) notifyLifeHint(p);
+                        }
                     }
                 }
                 double powerW = (thrustAllowed ? hp * WATT_PER_HP : 0.0);
@@ -243,15 +276,65 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             return true;
         }
         if (name.equals("elytrahp")) {
-            if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
-                if (!sender.hasPermission("elytrahp.admin")) {
-                    sender.sendMessage(Component.text("権限がありません", NamedTextColor.RED));
+            if (args.length >= 1) {
+                if (args[0].equalsIgnoreCase("reload")) {
+                    if (!sender.hasPermission("elytrahp.admin")) {
+                        sender.sendMessage(Component.text("権限がありません", NamedTextColor.RED));
+                        return true;
+                    }
+                    reloadConfig();
+                    reloadFromConfig();
+                    sender.sendMessage(Component.text("ElytraHorsepower: config reloaded.", NamedTextColor.GREEN));
                     return true;
                 }
-                reloadConfig();
-                reloadFromConfig();
-                sender.sendMessage(Component.text("ElytraHorsepower: config reloaded.", NamedTextColor.GREEN));
-                return true;
+                if (args[0].equalsIgnoreCase("life")) {
+                    if (!(sender instanceof Player)) {
+                        sender.sendMessage(Component.text("Players only.", NamedTextColor.RED));
+                        return true;
+                    }
+                    Player p = (Player)sender;
+                    if (!p.hasPermission("elytrahp.admin")) {
+                        p.sendMessage(Component.text("権限がありません", NamedTextColor.RED));
+                        return true;
+                    }
+                    ItemStack engine = getEngineItem(p);
+                    if (engine == null) {
+                        p.sendMessage(Component.text("手に持っているアイテムがエンジンではありません", NamedTextColor.YELLOW));
+                        return true;
+                    }
+                    if (args.length >= 2 && args[1].equalsIgnoreCase("set")) {
+                        if (args.length != 3) {
+                            p.sendMessage(Component.text("/elytrahp life set <minutes>", NamedTextColor.YELLOW));
+                            return true;
+                        }
+                        int minutes;
+                        try {
+                            minutes = Integer.parseInt(args[2]);
+                        } catch (NumberFormatException ex) {
+                            p.sendMessage(Component.text("数値で指定してください", NamedTextColor.RED));
+                            return true;
+                        }
+                        if (minutes < 0) minutes = 0;
+                        setLifeTotal(engine, minutes);
+                        setLifeUsedTicks(engine, 0);
+                        setLifeRepaired(engine, 0);
+                        p.sendMessage(Component.text("寿命を " + minutes + " 分に設定しました", NamedTextColor.GREEN));
+                        return true;
+                    }
+                    if (args.length >= 2 && args[1].equalsIgnoreCase("info")) {
+                        int total = getLifeTotal(engine);
+                        int repaired = getLifeRepaired(engine);
+                        int usedTicks = getLifeUsedTicks(engine);
+                        int usedMin = (int)Math.ceil((usedTicks / 20.0) / 60.0);
+                        int remain = total + repaired - usedMin;
+                        int pool = total - repaired;
+                        String state = remain <= 0 ? "故障中" : "故障していない";
+                        p.sendMessage(Component.text("寿命: " + total + "分 / 使用: " + usedMin + "分 / 修理: " + repaired + "分 / 残り: " + remain + "分 / 修理可能残り: " + pool + "分 / 状態: " + state, NamedTextColor.YELLOW));
+                        return true;
+                    }
+                    p.sendMessage(Component.text("Usage: /elytrahp life set <minutes> | /elytrahp life info", NamedTextColor.YELLOW));
+                    return true;
+                }
             }
             sender.sendMessage(Component.text("Usage: /elytrahp reload", NamedTextColor.YELLOW));
             return true;
@@ -269,6 +352,26 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         ItemStack engine = getEngineItem(p);
         if (engine == null) return;
 
+        PlayerInventory inv = p.getInventory();
+
+        if (LIFE_ENABLED) {
+            int total = getLifeTotal(engine);
+            if (total > 0) {
+                int repaired = getLifeRepaired(engine);
+                int usedTicks = getLifeUsedTicks(engine);
+                int remain = total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0);
+                int haveRepair = countItem(inv, LIFE_REPAIR_MATERIAL);
+                if (LIFE_PREFER_REPAIR_WHEN_BROKEN && remain <= 0) {
+                    handleRepair(p, engine, p.isSneaking() && LIFE_BULK_REPAIR_ON_SNEAK);
+                    return;
+                }
+                if (p.isSneaking() && LIFE_BULK_REPAIR_ON_SNEAK && haveRepair > 0) {
+                    handleRepair(p, engine, true);
+                    return;
+                }
+            }
+        }
+
         if (!FUEL_ENABLED) {
             p.sendActionBar(Component.text("燃料システムは無効です (config: fuel.enabled=false)", NamedTextColor.GRAY));
             return;
@@ -277,7 +380,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         final int coalNeed = FUEL_COAL_PER_CHARGE;
         final int gunNeed  = FUEL_GUNPOWDER_PER_CHARGE;
         final int ptsPerSet = FUEL_POINTS_PER_CHARGE;
-        PlayerInventory inv = p.getInventory();
 
         // まとめてチャージ（スニーク右クリック & 有効時）
         if (FUEL_BULK_CHARGE_ON_SNEAK && p.isSneaking()) {
@@ -366,6 +468,100 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         if (meta == null) return FUEL_CAPACITY;
         Integer v = meta.getPersistentDataContainer().get(FUEL_CAP_KEY, PersistentDataType.INTEGER);
         return v == null ? FUEL_CAPACITY : v;
+    }
+
+    // Life on item
+    private int getLifeTotal(ItemStack is) {
+        if (is == null) return 0;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return 0;
+        Integer v = meta.getPersistentDataContainer().get(LIFE_TOTAL_KEY, PersistentDataType.INTEGER);
+        return v == null ? 0 : Math.max(0, v);
+    }
+    private void setLifeTotal(ItemStack is, int value) {
+        if (is == null) return;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return;
+        meta.getPersistentDataContainer().set(LIFE_TOTAL_KEY, PersistentDataType.INTEGER, Math.max(0, value));
+        is.setItemMeta(meta);
+    }
+    private int getLifeUsedTicks(ItemStack is) {
+        if (is == null) return 0;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return 0;
+        Integer v = meta.getPersistentDataContainer().get(LIFE_USED_KEY, PersistentDataType.INTEGER);
+        return v == null ? 0 : Math.max(0, v);
+    }
+    private void setLifeUsedTicks(ItemStack is, int value) {
+        if (is == null) return;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return;
+        meta.getPersistentDataContainer().set(LIFE_USED_KEY, PersistentDataType.INTEGER, Math.max(0, value));
+        is.setItemMeta(meta);
+    }
+    private int getLifeRepaired(ItemStack is) {
+        if (is == null) return 0;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return 0;
+        Integer v = meta.getPersistentDataContainer().get(LIFE_REPAIRED_KEY, PersistentDataType.INTEGER);
+        return v == null ? 0 : Math.max(0, v);
+    }
+    private void setLifeRepaired(ItemStack is, int value) {
+        if (is == null) return;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return;
+        meta.getPersistentDataContainer().set(LIFE_REPAIRED_KEY, PersistentDataType.INTEGER, Math.max(0, value));
+        is.setItemMeta(meta);
+    }
+
+    private void notifyLifeHint(Player p) {
+        long now = System.currentTimeMillis();
+        long last = lastLifeNotify.getOrDefault(p.getUniqueId(), 0L);
+        if ((now - last) < (long)(LIFE_NOTIFY_COOLDOWN_SECS * 1000.0)) return;
+        lastLifeNotify.put(p.getUniqueId(), now);
+        p.sendActionBar(Component.text("エンジン故障: エンジンを手に持って右クリック → " + LIFE_REPAIR_MATERIAL + "(1個=" + LIFE_MINUTES_PER_ITEM + "分)で修理", NamedTextColor.RED));
+    }
+
+    private void handleRepair(Player p, ItemStack engine, boolean bulk) {
+        int total = getLifeTotal(engine);
+        if (total <= 0) {
+            p.sendActionBar(Component.text("このエンジンは寿命が設定されていません（管理者: /elytrahp life set <分>）", NamedTextColor.YELLOW));
+            return;
+        }
+        int repaired = getLifeRepaired(engine);
+        int usedTicks = getLifeUsedTicks(engine);
+        int usedMin = (int)Math.ceil((usedTicks / 20.0) / 60.0);
+        int remain = total + repaired - usedMin;
+        int pool = total - repaired;
+        PlayerInventory inv = p.getInventory();
+        int have = countItem(inv, LIFE_REPAIR_MATERIAL);
+        int minutesByInv = have * LIFE_MINUTES_PER_ITEM;
+        if (pool <= 0) {
+            p.sendActionBar(Component.text("修理不能: 修理上限に達しました（累計 " + repaired + "/" + total + " 分）", NamedTextColor.YELLOW));
+            return;
+        }
+        if (minutesByInv <= 0) {
+            p.sendActionBar(Component.text("修理に必要: " + LIFE_REPAIR_MATERIAL + " ×1（" + LIFE_MINUTES_PER_ITEM + "分）", NamedTextColor.YELLOW));
+            return;
+        }
+        int minutes;
+        if (bulk) {
+            minutes = Math.min(pool, minutesByInv);
+            minutes = Math.min(minutes, Math.max(1, LIFE_MAX_SETS_PER_CLICK));
+        } else {
+            minutes = Math.min(Math.min(LIFE_MINUTES_PER_ITEM, pool), minutesByInv);
+        }
+        if (minutes <= 0) {
+            p.sendActionBar(Component.text("修理不能: 修理上限に達しました（累計 " + repaired + "/" + total + " 分）", NamedTextColor.YELLOW));
+            return;
+        }
+        int items = (int)Math.ceil((double)minutes / LIFE_MINUTES_PER_ITEM);
+        removeItems(inv, LIFE_REPAIR_MATERIAL, items);
+        repaired += minutes;
+        setLifeRepaired(engine, repaired);
+        remain += minutes;
+        int poolAfter = total - repaired;
+        p.sendActionBar(Component.text("修理 +" + minutes + "分（" + LIFE_REPAIR_MATERIAL + " " + items + " 個） 残り: " + remain + "分 / 修理可能残り: " + poolAfter + "分", NamedTextColor.GOLD));
     }
 
     private void notifyFuelHint(Player p) {
@@ -554,5 +750,17 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         NEUTRALIZE_VANILLA_DRAG = getConfig().getBoolean("vanilla.neutralize_drag", DEFAULT_NEUTRALIZE_VANILLA_DRAG);
         VANILLA_AIR_DAMP        = getConfig().getDouble("vanilla.air_damping_per_tick", DEFAULT_VANILLA_AIR_DAMP);
         VANILLA_ELYTRA_DAMP     = getConfig().getDouble("vanilla.elytra_damping_per_tick", DEFAULT_VANILLA_ELYTRA_DAMP);
+
+        // life
+        LIFE_ENABLED = getConfig().getBoolean("life.enabled", true);
+        LIFE_PREFER_REPAIR_WHEN_BROKEN = getConfig().getBoolean("life.prefer_repair_when_broken", true);
+        LIFE_BULK_REPAIR_ON_SNEAK = getConfig().getBoolean("life.bulk_repair_on_sneak", true);
+        LIFE_MAX_SETS_PER_CLICK = getConfig().getInt("life.max_sets_per_click", 9999);
+        String matName = getConfig().getString("life.repair_material", "LAPIS_BLOCK");
+        Material mat = Material.matchMaterial(matName);
+        if (mat == null) mat = Material.LAPIS_BLOCK;
+        LIFE_REPAIR_MATERIAL = mat;
+        LIFE_MINUTES_PER_ITEM = getConfig().getInt("life.minutes_per_item", 1);
+        LIFE_NOTIFY_COOLDOWN_SECS = getConfig().getDouble("life.notify_cooldown_seconds", 2.0);
     }
 }

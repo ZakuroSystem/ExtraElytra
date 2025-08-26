@@ -47,3 +47,17 @@ vanilla:
   neutralize_drag: true          # true でバニラの空中/エリトラ減衰を相殺
   air_damping_per_tick: 0.98     # 空中の減衰係数の目安（状況で微調整）
   elytra_damping_per_tick: 0.99  # エリトラ滑空時の減衰係数の目安
+
+life:
+  enabled: true
+  # 右クリック挙動
+  prefer_repair_when_broken: true   # 故障中は修理を右クリックで最優先
+  bulk_repair_on_sneak: true        # スニーク右クリックでまとめて修理
+  max_sets_per_click: 9999          # 1クリックで修理する最大分数（安全上限）
+
+  # 修理素材
+  repair_material: LAPIS_BLOCK      # ラピスラズリブロック
+  minutes_per_item: 1               # 1個あたりの修理分数
+
+  # 案内メッセージのスパム抑制
+  notify_cooldown_seconds: 2.0
