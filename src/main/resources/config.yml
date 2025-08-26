@@ -37,6 +37,9 @@ fuel:
     gunpowder: 2
     points: 300
   notify_cooldown_seconds: 2.0
+  # まとめてチャージ（スニーク右クリック）
+  bulk_charge_on_sneak: true      # true でスニーク右クリック時にまとめて最大までチャージ
+  max_sets_per_click: 9999        # 1クリックで消費できる燃料セットの上限（安全用）
 
 # --- Vanilla damping neutralizer (バニラ空中減衰の打ち消し) ---
 vanilla:

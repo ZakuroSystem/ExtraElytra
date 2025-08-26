@@ -89,6 +89,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private int FUEL_GUNPOWDER_PER_CHARGE;
     private int FUEL_POINTS_PER_CHARGE;
     private double FUEL_NOTIFY_COOLDOWN_SECS;
+    private boolean FUEL_BULK_CHARGE_ON_SNEAK;
+    private int FUEL_MAX_SETS_PER_CLICK;
 
     // state
     private final Map<UUID, ArrayDeque<Vector>> velHistoryMps = new HashMap<>();
@@ -269,17 +271,58 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             p.sendActionBar(Component.text("燃料システムは無効です (config: fuel.enabled=false)", NamedTextColor.GRAY));
             return;
         }
+
+        final int coalNeed = FUEL_COAL_PER_CHARGE;
+        final int gunNeed  = FUEL_GUNPOWDER_PER_CHARGE;
+        final int ptsPerSet = FUEL_POINTS_PER_CHARGE;
         PlayerInventory inv = p.getInventory();
-        if (countItem(inv, Material.COAL) >= FUEL_COAL_PER_CHARGE &&
-            countItem(inv, Material.GUNPOWDER) >= FUEL_GUNPOWDER_PER_CHARGE) {
-            removeItems(inv, Material.COAL, FUEL_COAL_PER_CHARGE);
-            removeItems(inv, Material.GUNPOWDER, FUEL_GUNPOWDER_PER_CHARGE);
+
+        // まとめてチャージ（スニーク右クリック & 有効時）
+        if (FUEL_BULK_CHARGE_ON_SNEAK && p.isSneaking()) {
+            if (ptsPerSet <= 0) {
+                p.sendActionBar(Component.text("設定エラー: fuel.charge.points が 0 以下です", NamedTextColor.RED));
+                return;
+            }
+            int haveCoal = countItem(inv, Material.COAL);
+            int haveGun  = countItem(inv, Material.GUNPOWDER);
+            int setsByCoal = coalNeed > 0 ? (haveCoal / coalNeed) : Integer.MAX_VALUE;
+            int setsByGun  = gunNeed > 0 ? (haveGun / gunNeed) : Integer.MAX_VALUE;
             int cap = getFuelCap(engine);
-            int newVal = Math.min(cap, getFuel(engine) + FUEL_POINTS_PER_CHARGE);
+            int cur = getFuel(engine);
+            int roomPts = Math.max(0, cap - cur);
+            int setsByCap = ptsPerSet > 0 ? (roomPts / ptsPerSet) : 0;
+
+            int sets = Math.min(Math.min(setsByCoal, setsByGun), setsByCap);
+            sets = Math.min(sets, Math.max(1, FUEL_MAX_SETS_PER_CLICK));
+
+            if (sets <= 0) {
+                if (roomPts <= 0) {
+                    p.sendActionBar(Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+                } else {
+                    p.sendActionBar(Component.text("チャージに必要: 石炭×" + coalNeed + " + 火薬×" + gunNeed, NamedTextColor.YELLOW));
+                }
+                return;
+            }
+            if (coalNeed > 0) removeItems(inv, Material.COAL, coalNeed * sets);
+            if (gunNeed  > 0) removeItems(inv, Material.GUNPOWDER, gunNeed * sets);
+            int addPts = ptsPerSet * sets;
+            int newVal = Math.min(cap, cur + addPts);
             setFuel(engine, newVal);
-            p.sendActionBar(Component.text("チャージ +" + FUEL_POINTS_PER_CHARGE + "pt  (燃料: " + newVal + "/" + cap + ")", NamedTextColor.GOLD));
+            p.sendActionBar(Component.text("まとめてチャージ +" + addPts + "pt (" + sets + "セット消費)  燃料: " + newVal + "/" + cap, NamedTextColor.GOLD));
+            return;
+        }
+
+        // 通常（非スニーク）: 1 セットだけチャージ
+        if (countItem(inv, Material.COAL) >= coalNeed && countItem(inv, Material.GUNPOWDER) >= gunNeed) {
+            removeItems(inv, Material.COAL, coalNeed);
+            removeItems(inv, Material.GUNPOWDER, gunNeed);
+            int cap = getFuelCap(engine);
+            int add = ptsPerSet;
+            int newVal = Math.min(cap, getFuel(engine) + add);
+            setFuel(engine, newVal);
+            p.sendActionBar(Component.text("チャージ +" + add + "pt  (燃料: " + newVal + "/" + cap + ")", NamedTextColor.GOLD));
         } else {
-            p.sendActionBar(Component.text("チャージに必要: 石炭×" + FUEL_COAL_PER_CHARGE + " + 火薬×" + FUEL_GUNPOWDER_PER_CHARGE, NamedTextColor.YELLOW));
+            p.sendActionBar(Component.text("チャージに必要: 石炭×" + coalNeed + " + 火薬×" + gunNeed, NamedTextColor.YELLOW));
         }
     }
 
@@ -499,6 +542,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         FUEL_GUNPOWDER_PER_CHARGE = getConfig().getInt("fuel.charge.gunpowder", 2);
         FUEL_POINTS_PER_CHARGE = getConfig().getInt("fuel.charge.points", 300);
         FUEL_NOTIFY_COOLDOWN_SECS = getConfig().getDouble("fuel.notify_cooldown_seconds", 2.0);
+        FUEL_BULK_CHARGE_ON_SNEAK = getConfig().getBoolean("fuel.bulk_charge_on_sneak", true);
+        FUEL_MAX_SETS_PER_CLICK   = getConfig().getInt("fuel.max_sets_per_click", 9999);
 
         // vanilla damping neutralizer
         NEUTRALIZE_VANILLA_DRAG = getConfig().getBoolean("vanilla.neutralize_drag", DEFAULT_NEUTRALIZE_VANILLA_DRAG);
