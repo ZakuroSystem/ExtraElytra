@@ -46,6 +46,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private static final double DEFAULT_CDA_BASE_M2 = 0.70;
     private static final double DEFAULT_DRAG_MULTIPLIER = 1.0;
 
+    // --- Vanilla damping neutralizer defaults ---
+    private static final boolean DEFAULT_NEUTRALIZE_VANILLA_DRAG = true;
+    private static final double  DEFAULT_VANILLA_AIR_DAMP = 0.98;     // airborne
+    private static final double  DEFAULT_VANILLA_ELYTRA_DAMP = 0.99;  // while gliding
+
     // g-force params
     private static final double DEFAULT_GFORCE_SAMPLE_SECONDS = 0.2;
     private static final boolean DEFAULT_GFORCE_KILL_CREATIVE = false;
@@ -92,6 +97,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
     private static final Pattern HP_PATTERN = Pattern.compile("(?i)(?:hp|馬力)[:：]?\\s*([0-9]+(?:\\.[0-9]+)?)");
 
+    // Vanilla damping neutralizer (config)
+    private boolean NEUTRALIZE_VANILLA_DRAG;
+    private double VANILLA_AIR_DAMP;
+    private double VANILLA_ELYTRA_DAMP;
+
     @Override
     public void onEnable() {
         HP_KEY = new NamespacedKey(this, "horsepower");
@@ -119,6 +129,16 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
                 // current velocity
                 Vector velBt = p.getVelocity();
+
+                // --- Neutralize vanilla air/elytra damping (相殺) ---
+                if (NEUTRALIZE_VANILLA_DRAG) {
+                    double f = p.isGliding() ? VANILLA_ELYTRA_DAMP : VANILLA_AIR_DAMP;
+                    if (f > 0.0 && f < 1.0) {
+                        // この tick ですでに掛かっている減衰を 1/f 掛け戻して相殺
+                        velBt.multiply(1.0 / f);
+                    }
+                }
+
                 double speedBt = velBt.length();
                 double speedMps = speedBt * 20.0;
                 if (speedMps < MIN_SPEED_MPS) speedMps = MIN_SPEED_MPS;
@@ -337,8 +357,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         p.sendActionBar(Component.text(String.format("%.1f g : -%.1f", Math.min(gForce, 100.0), dmg), NamedTextColor.RED));
     }
 
-    private static class GStep { double g; double dmg; GStep(double g, double dmg, boolean dummy){ this.g=g; this.dmg=dmg; } }
-
     private double computeDamageFromTable(double g) {
         double best = 0.0;
         for (GStep s : gDamageTable) {
@@ -481,5 +499,10 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         FUEL_GUNPOWDER_PER_CHARGE = getConfig().getInt("fuel.charge.gunpowder", 2);
         FUEL_POINTS_PER_CHARGE = getConfig().getInt("fuel.charge.points", 300);
         FUEL_NOTIFY_COOLDOWN_SECS = getConfig().getDouble("fuel.notify_cooldown_seconds", 2.0);
+
+        // vanilla damping neutralizer
+        NEUTRALIZE_VANILLA_DRAG = getConfig().getBoolean("vanilla.neutralize_drag", DEFAULT_NEUTRALIZE_VANILLA_DRAG);
+        VANILLA_AIR_DAMP        = getConfig().getDouble("vanilla.air_damping_per_tick", DEFAULT_VANILLA_AIR_DAMP);
+        VANILLA_ELYTRA_DAMP     = getConfig().getDouble("vanilla.elytra_damping_per_tick", DEFAULT_VANILLA_ELYTRA_DAMP);
     }
 }

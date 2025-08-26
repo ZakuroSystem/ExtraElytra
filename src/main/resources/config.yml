@@ -37,3 +37,9 @@ fuel:
     gunpowder: 2
     points: 300
   notify_cooldown_seconds: 2.0
+
+# --- Vanilla damping neutralizer (バニラ空中減衰の打ち消し) ---
+vanilla:
+  neutralize_drag: true          # true でバニラの空中/エリトラ減衰を相殺
+  air_damping_per_tick: 0.98     # 空中の減衰係数の目安（状況で微調整）
+  elytra_damping_per_tick: 0.99  # エリトラ滑空時の減衰係数の目安
