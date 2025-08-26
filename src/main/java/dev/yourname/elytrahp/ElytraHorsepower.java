@@ -172,6 +172,31 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 ItemStack engine = getEngineItem(p);
                 double hp = extractHorsepower(engine);
 
+                // Show fuel/life status while gliding
+                if (FUEL_ENABLED || LIFE_ENABLED) {
+                    StringBuilder sb = new StringBuilder();
+                    if (FUEL_ENABLED) {
+                        int fuelCur = getFuel(engine);
+                        int fuelCap = getFuelCap(engine);
+                        sb.append("燃料: ").append(fuelCur).append("/").append(fuelCap);
+                    }
+                    if (LIFE_ENABLED) {
+                        if (sb.length() > 0) sb.append(" / ");
+                        int total = getLifeTotal(engine);
+                        if (total > 0) {
+                            int repaired = getLifeRepaired(engine);
+                            int usedTicks = getLifeUsedTicks(engine);
+                            int remain = total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0);
+                            sb.append("寿命: ").append(remain).append("分");
+                        } else {
+                            sb.append("寿命:∞");
+                        }
+                    }
+                    if (sb.length() > 0) {
+                        p.sendActionBar(Component.text(sb.toString(), NamedTextColor.AQUA));
+                    }
+                }
+
                 // drag (all gliders)
                 double cdA = CDA_BASE_M2 * DRAG_MULTIPLIER * scale;
                 double aDrag = (0.5 * rho * cdA * speedMps * speedMps) / massKg;
@@ -400,8 +425,12 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             sets = Math.min(sets, Math.max(1, FUEL_MAX_SETS_PER_CLICK));
 
             if (sets <= 0) {
-                if (roomPts <= 0) {
-                    p.sendActionBar(Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+                if (setsByCap <= 0) {
+                    if (roomPts <= 0) {
+                        p.sendActionBar(Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+                    } else {
+                        p.sendActionBar(Component.text("燃料の残容量が不足しています (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+                    }
                 } else {
                     p.sendActionBar(Component.text("チャージに必要: 石炭×" + coalNeed + " + 火薬×" + gunNeed, NamedTextColor.YELLOW));
                 }
@@ -417,12 +446,22 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         }
 
         // 通常（非スニーク）: 1 セットだけチャージ
+        int cap = getFuelCap(engine);
+        int cur = getFuel(engine);
+        int room = cap - cur;
+        if (room <= 0) {
+            p.sendActionBar(Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+            return;
+        }
+        if (room < ptsPerSet) {
+            p.sendActionBar(Component.text("燃料の残容量が不足しています (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+            return;
+        }
         if (countItem(inv, Material.COAL) >= coalNeed && countItem(inv, Material.GUNPOWDER) >= gunNeed) {
             removeItems(inv, Material.COAL, coalNeed);
             removeItems(inv, Material.GUNPOWDER, gunNeed);
-            int cap = getFuelCap(engine);
             int add = ptsPerSet;
-            int newVal = Math.min(cap, getFuel(engine) + add);
+            int newVal = Math.min(cap, cur + add);
             setFuel(engine, newVal);
             p.sendActionBar(Component.text("チャージ +" + add + "pt  (燃料: " + newVal + "/" + cap + ")", NamedTextColor.GOLD));
         } else {
