@@ -12,6 +12,7 @@ aero:
 gforce:
   sample_seconds: 0.2
   kill_in_creative: false
+  damage_start_g: 3.0      # g at which damage begins
   damage_table:
     - { g: 3.0, dmg: 3.0 }
     - { g: 3.5, dmg: 4.5 }

@@ -54,6 +54,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     // g-force params
     private static final double DEFAULT_GFORCE_SAMPLE_SECONDS = 0.2;
     private static final boolean DEFAULT_GFORCE_KILL_CREATIVE = false;
+    private static final double DEFAULT_GFORCE_DAMAGE_START_G = 3.0;
 
     // Physics constants
     private static final double G = 9.80665;
@@ -76,6 +77,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
     private double GFORCE_SAMPLE_SECONDS;
     private boolean GFORCE_KILL_CREATIVE;
+    private double GFORCE_DAMAGE_START_G;
 
     // g-damage table
     private static class GStep { double g; double dmg; GStep(double g, double dmg){this.g=g; this.dmg=dmg;} }
@@ -391,6 +393,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         double a = dv.length() / (sampleTicks * DT);
         double gForce = a / G;
 
+        if (gForce < GFORCE_DAMAGE_START_G) return;
+
         double dmg = computeDamageFromTable(gForce);
         if (dmg <= 0) return;
 
@@ -513,6 +517,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
         GFORCE_SAMPLE_SECONDS = getConfig().getDouble("gforce.sample_seconds", DEFAULT_GFORCE_SAMPLE_SECONDS);
         GFORCE_KILL_CREATIVE = getConfig().getBoolean("gforce.kill_in_creative", DEFAULT_GFORCE_KILL_CREATIVE);
+        GFORCE_DAMAGE_START_G = getConfig().getDouble("gforce.damage_start_g", DEFAULT_GFORCE_DAMAGE_START_G);
 
         // g damage table
         gDamageTable.clear();
@@ -528,7 +533,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             gDamageTable.sort(Comparator.comparingDouble(s -> s.g));
         } else {
             for (int i=0;i<=13;i++) {
-                double g = 3.0 + 0.5*i;
+                double g = GFORCE_DAMAGE_START_G + 0.5*i;
                 double dmg = 3.0 + 1.5*i;
                 gDamageTable.add(new GStep(g, dmg));
             }
