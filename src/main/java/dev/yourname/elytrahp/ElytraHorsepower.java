@@ -110,6 +110,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private final Map<UUID, ArrayDeque<Vector>> velHistoryMps = new HashMap<>();
     private final Map<UUID, Long> lastFuelNotify = new HashMap<>();
     private final Map<UUID, Long> lastLifeNotify = new HashMap<>();
+    private final Map<UUID, Long> lastWarn = new HashMap<>();
+    private final Map<UUID, Long> lastStatus = new HashMap<>();
+    private static final long STATUS_INTERVAL_MS = 3000L;
     private long tickCounter = 0L;
 
     private static final Pattern HP_PATTERN = Pattern.compile("(?i)(?:hp|馬力)[:：]?\\s*([0-9]+(?:\\.[0-9]+)?)");
@@ -172,28 +175,35 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 ItemStack engine = getEngineItem(p);
                 double hp = extractHorsepower(engine);
 
-                // Show fuel/life status while gliding
-                if (FUEL_ENABLED || LIFE_ENABLED) {
-                    StringBuilder sb = new StringBuilder();
-                    if (FUEL_ENABLED) {
-                        int fuelCur = getFuel(engine);
-                        int fuelCap = getFuelCap(engine);
-                        sb.append("燃料: ").append(fuelCur).append("/").append(fuelCap);
-                    }
-                    if (LIFE_ENABLED) {
-                        if (sb.length() > 0) sb.append(" / ");
-                        int total = getLifeTotal(engine);
-                        if (total > 0) {
-                            int repaired = getLifeRepaired(engine);
-                            int usedTicks = getLifeUsedTicks(engine);
-                            int remain = total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0);
-                            sb.append("寿命: ").append(remain).append("分");
-                        } else {
-                            sb.append("寿命:∞");
+                // Show fuel/life status while gliding (every 3s, no warnings)
+                if (engine != null && (FUEL_ENABLED || LIFE_ENABLED)) {
+                    long now = System.currentTimeMillis();
+                    UUID id = p.getUniqueId();
+                    long lastWarnAt = lastWarn.getOrDefault(id, 0L);
+                    long lastStatusAt = lastStatus.getOrDefault(id, 0L);
+                    if (now - lastWarnAt >= STATUS_INTERVAL_MS && now - lastStatusAt >= STATUS_INTERVAL_MS) {
+                        StringBuilder sb = new StringBuilder();
+                        if (FUEL_ENABLED) {
+                            int fuelCur = getFuel(engine);
+                            int fuelCap = getFuelCap(engine);
+                            sb.append("燃料: ").append(fuelCur).append("/").append(fuelCap);
                         }
-                    }
-                    if (sb.length() > 0) {
-                        p.sendActionBar(Component.text(sb.toString(), NamedTextColor.AQUA));
+                        if (LIFE_ENABLED) {
+                            if (sb.length() > 0) sb.append(" / ");
+                            int total = getLifeTotal(engine);
+                            if (total > 0) {
+                                int repaired = getLifeRepaired(engine);
+                                int usedTicks = getLifeUsedTicks(engine);
+                                int remain = total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0);
+                                sb.append("寿命: ").append(remain).append("分");
+                            } else {
+                                sb.append("寿命:∞");
+                            }
+                        }
+                        if (sb.length() > 0) {
+                            p.sendActionBar(Component.text(sb.toString(), NamedTextColor.AQUA));
+                            lastStatus.put(id, now);
+                        }
                     }
                 }
 
@@ -398,7 +408,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         }
 
         if (!FUEL_ENABLED) {
-            p.sendActionBar(Component.text("燃料システムは無効です (config: fuel.enabled=false)", NamedTextColor.GRAY));
+            sendActionBarMessage(p, Component.text("燃料システムは無効です (config: fuel.enabled=false)", NamedTextColor.GRAY));
             return;
         }
 
@@ -409,7 +419,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         // まとめてチャージ（スニーク右クリック & 有効時）
         if (FUEL_BULK_CHARGE_ON_SNEAK && p.isSneaking()) {
             if (ptsPerSet <= 0) {
-                p.sendActionBar(Component.text("設定エラー: fuel.charge.points が 0 以下です", NamedTextColor.RED));
+                sendActionBarMessage(p, Component.text("設定エラー: fuel.charge.points が 0 以下です", NamedTextColor.RED));
                 return;
             }
             int haveCoal = countItem(inv, Material.COAL);
@@ -427,12 +437,12 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             if (sets <= 0) {
                 if (setsByCap <= 0) {
                     if (roomPts <= 0) {
-                        p.sendActionBar(Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+                        sendActionBarMessage(p, Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
                     } else {
-                        p.sendActionBar(Component.text("燃料の残容量が不足しています (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+                        sendActionBarMessage(p, Component.text("燃料の残容量が不足しています (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
                     }
                 } else {
-                    p.sendActionBar(Component.text("チャージに必要: 石炭×" + coalNeed + " + 火薬×" + gunNeed, NamedTextColor.YELLOW));
+                    sendActionBarMessage(p, Component.text("チャージに必要: 石炭×" + coalNeed + " + 火薬×" + gunNeed, NamedTextColor.YELLOW));
                 }
                 return;
             }
@@ -441,7 +451,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             int addPts = ptsPerSet * sets;
             int newVal = Math.min(cap, cur + addPts);
             setFuel(engine, newVal);
-            p.sendActionBar(Component.text("まとめてチャージ +" + addPts + "pt (" + sets + "セット消費)  燃料: " + newVal + "/" + cap, NamedTextColor.GOLD));
+            sendActionBarMessage(p, Component.text("まとめてチャージ +" + addPts + "pt (" + sets + "セット消費)  燃料: " + newVal + "/" + cap, NamedTextColor.GOLD));
             return;
         }
 
@@ -450,11 +460,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         int cur = getFuel(engine);
         int room = cap - cur;
         if (room <= 0) {
-            p.sendActionBar(Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+            sendActionBarMessage(p, Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
             return;
         }
         if (room < ptsPerSet) {
-            p.sendActionBar(Component.text("燃料の残容量が不足しています (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+            sendActionBarMessage(p, Component.text("燃料の残容量が不足しています (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
             return;
         }
         if (countItem(inv, Material.COAL) >= coalNeed && countItem(inv, Material.GUNPOWDER) >= gunNeed) {
@@ -463,9 +473,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             int add = ptsPerSet;
             int newVal = Math.min(cap, cur + add);
             setFuel(engine, newVal);
-            p.sendActionBar(Component.text("チャージ +" + add + "pt  (燃料: " + newVal + "/" + cap + ")", NamedTextColor.GOLD));
+            sendActionBarMessage(p, Component.text("チャージ +" + add + "pt  (燃料: " + newVal + "/" + cap + ")", NamedTextColor.GOLD));
         } else {
-            p.sendActionBar(Component.text("チャージに必要: 石炭×" + coalNeed + " + 火薬×" + gunNeed, NamedTextColor.YELLOW));
+            sendActionBarMessage(p, Component.text("チャージに必要: 石炭×" + coalNeed + " + 火薬×" + gunNeed, NamedTextColor.YELLOW));
         }
     }
 
@@ -558,13 +568,13 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         long last = lastLifeNotify.getOrDefault(p.getUniqueId(), 0L);
         if ((now - last) < (long)(LIFE_NOTIFY_COOLDOWN_SECS * 1000.0)) return;
         lastLifeNotify.put(p.getUniqueId(), now);
-        p.sendActionBar(Component.text("エンジン故障: エンジンを手に持って右クリック → " + LIFE_REPAIR_MATERIAL + "(1個=" + LIFE_MINUTES_PER_ITEM + "分)で修理", NamedTextColor.RED));
+        sendActionBarMessage(p, Component.text("エンジン故障: エンジンを手に持って右クリック → " + LIFE_REPAIR_MATERIAL + "(1個=" + LIFE_MINUTES_PER_ITEM + "分)で修理", NamedTextColor.RED));
     }
 
     private void handleRepair(Player p, ItemStack engine, boolean bulk) {
         int total = getLifeTotal(engine);
         if (total <= 0) {
-            p.sendActionBar(Component.text("このエンジンは寿命が設定されていません（管理者: /elytrahp life set <分>）", NamedTextColor.YELLOW));
+            sendActionBarMessage(p, Component.text("このエンジンは寿命が設定されていません（管理者: /elytrahp life set <分>）", NamedTextColor.YELLOW));
             return;
         }
         int repaired = getLifeRepaired(engine);
@@ -576,11 +586,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         int have = countItem(inv, LIFE_REPAIR_MATERIAL);
         int minutesByInv = have * LIFE_MINUTES_PER_ITEM;
         if (pool <= 0) {
-            p.sendActionBar(Component.text("修理不能: 修理上限に達しました（累計 " + repaired + "/" + total + " 分）", NamedTextColor.YELLOW));
+            sendActionBarMessage(p, Component.text("修理不能: 修理上限に達しました（累計 " + repaired + "/" + total + " 分）", NamedTextColor.YELLOW));
             return;
         }
         if (minutesByInv <= 0) {
-            p.sendActionBar(Component.text("修理に必要: " + LIFE_REPAIR_MATERIAL + " ×1（" + LIFE_MINUTES_PER_ITEM + "分）", NamedTextColor.YELLOW));
+            sendActionBarMessage(p, Component.text("修理に必要: " + LIFE_REPAIR_MATERIAL + " ×1（" + LIFE_MINUTES_PER_ITEM + "分）", NamedTextColor.YELLOW));
             return;
         }
         int minutes;
@@ -591,7 +601,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             minutes = Math.min(Math.min(LIFE_MINUTES_PER_ITEM, pool), minutesByInv);
         }
         if (minutes <= 0) {
-            p.sendActionBar(Component.text("修理不能: 修理上限に達しました（累計 " + repaired + "/" + total + " 分）", NamedTextColor.YELLOW));
+            sendActionBarMessage(p, Component.text("修理不能: 修理上限に達しました（累計 " + repaired + "/" + total + " 分）", NamedTextColor.YELLOW));
             return;
         }
         int items = (int)Math.ceil((double)minutes / LIFE_MINUTES_PER_ITEM);
@@ -600,7 +610,12 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         setLifeRepaired(engine, repaired);
         remain += minutes;
         int poolAfter = total - repaired;
-        p.sendActionBar(Component.text("修理 +" + minutes + "分（" + LIFE_REPAIR_MATERIAL + " " + items + " 個） 残り: " + remain + "分 / 修理可能残り: " + poolAfter + "分", NamedTextColor.GOLD));
+        sendActionBarMessage(p, Component.text("修理 +" + minutes + "分（" + LIFE_REPAIR_MATERIAL + " " + items + " 個） 残り: " + remain + "分 / 修理可能残り: " + poolAfter + "分", NamedTextColor.GOLD));
+    }
+
+    private void sendActionBarMessage(Player p, Component c) {
+        p.sendActionBar(c);
+        lastWarn.put(p.getUniqueId(), System.currentTimeMillis());
     }
 
     private void notifyFuelHint(Player p) {
@@ -608,7 +623,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         long last = lastFuelNotify.getOrDefault(p.getUniqueId(), 0L);
         if ((now - last) < (long)(FUEL_NOTIFY_COOLDOWN_SECS * 1000.0)) return;
         lastFuelNotify.put(p.getUniqueId(), now);
-        p.sendActionBar(Component.text("燃料切れ: エンジンを手に持って右クリック → 石炭×" + FUEL_COAL_PER_CHARGE + " + 火薬×" + FUEL_GUNPOWDER_PER_CHARGE + " で +" + FUEL_POINTS_PER_CHARGE + "pt", NamedTextColor.RED));
+        sendActionBarMessage(p, Component.text("燃料切れ: エンジンを手に持って右クリック → 石炭×" + FUEL_COAL_PER_CHARGE + " + 火薬×" + FUEL_GUNPOWDER_PER_CHARGE + " で +" + FUEL_POINTS_PER_CHARGE + "pt", NamedTextColor.RED));
     }
 
     // g-force damage
@@ -636,7 +651,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         if (!GFORCE_KILL_CREATIVE && (p.getGameMode() == GameMode.CREATIVE || p.getGameMode() == GameMode.SPECTATOR)) return;
 
         p.damage(dmg);
-        p.sendActionBar(Component.text(String.format("%.1f g : -%.1f", Math.min(gForce, 100.0), dmg), NamedTextColor.RED));
+        sendActionBarMessage(p, Component.text(String.format("%.1f g : -%.1f", Math.min(gForce, 100.0), dmg), NamedTextColor.RED));
     }
 
     private double computeDamageFromTable(double g) {
