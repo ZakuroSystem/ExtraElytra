@@ -9,8 +9,13 @@ import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
@@ -28,30 +33,31 @@ import java.util.regex.Pattern;
 
 public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private NamespacedKey HP_KEY;
+    private NamespacedKey FUEL_KEY;
+    private NamespacedKey FUEL_CAP_KEY;
 
     // --- Defaults (config overrideable) ---
-    private static final double DEFAULT_BASE_MASS_KG = 70.0;        // scale=1.0 mass [kg]
-    private static final double DEFAULT_WATT_PER_HP = 745.699872;    // 1 hp [W]
-    private static final double DEFAULT_MIN_SPEED_MPS = 0.5;         // avoid divergence near v=0
-    private static final double DEFAULT_MAX_ACCEL_MPS2 = 50.0;       // safety clamp
+    private static final double DEFAULT_BASE_MASS_KG = 70.0;
+    private static final double DEFAULT_WATT_PER_HP = 745.699872;
+    private static final double DEFAULT_MIN_SPEED_MPS = 0.5;
+    private static final double DEFAULT_MAX_ACCEL_MPS2 = 50.0;
 
-    private static final double DEFAULT_SEA_LEVEL_Y = 64.0;          // y=64 m as sea level
-    private static final double DEFAULT_CDA_BASE_M2 = 0.70;          // baseline CdA [m^2]
-    private static final double DEFAULT_DRAG_MULTIPLIER = 1.0;       // extra multiplier
+    private static final double DEFAULT_SEA_LEVEL_Y = 64.0;
+    private static final double DEFAULT_CDA_BASE_M2 = 0.70;
+    private static final double DEFAULT_DRAG_MULTIPLIER = 1.0;
 
     // g-force params
-    private static final double DEFAULT_GFORCE_SAMPLE_SECONDS = 0.2; // 4 ticks
-    private static final double DEFAULT_GFORCE_DEATH_G_UNUSED = 1e9; // unused, left for compat
+    private static final double DEFAULT_GFORCE_SAMPLE_SECONDS = 0.2;
     private static final boolean DEFAULT_GFORCE_KILL_CREATIVE = false;
 
     // Physics constants
-    private static final double G = 9.80665;          // m/s^2
-    private static final double T0 = 288.15;          // K sea-level temperature
-    private static final double L = 0.0065;           // K/m lapse rate
-    private static final double P0 = 101325.0;        // Pa sea-level pressure (1013 hPa)
-    private static final double R = 287.05;           // J/(kg·K) dry air gas constant
+    private static final double G = 9.80665;
+    private static final double T0 = 288.15;
+    private static final double L = 0.0065;
+    private static final double P0 = 101325.0;
+    private static final double R = 287.05;
 
-    private static final double DT = 1.0 / 20.0;      // 1 tick [s]
+    private static final double DT = 1.0 / 20.0;
 
     // Effective values from config
     private double BASE_MASS_KG;
@@ -66,18 +72,35 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private double GFORCE_SAMPLE_SECONDS;
     private boolean GFORCE_KILL_CREATIVE;
 
-    private static final Pattern HP_PATTERN = Pattern.compile("(?i)(?:hp|馬力)[:：]?\\s*([0-9]+(?:\\.[0-9]+)?)");
+    // g-damage table
+    private static class GStep { double g; double dmg; GStep(double g, double dmg){this.g=g; this.dmg=dmg;} }
+    private List<GStep> gDamageTable = new ArrayList<>();
 
-    // g-force: store recent velocity (m/s) to compute 0.2 s delta; tick counter to sample
+    // fuel config
+    private boolean FUEL_ENABLED;
+    private int FUEL_CAPACITY;
+    private double FUEL_SAMPLE_COST_PER_HP;
+    private int FUEL_COAL_PER_CHARGE;
+    private int FUEL_GUNPOWDER_PER_CHARGE;
+    private int FUEL_POINTS_PER_CHARGE;
+    private double FUEL_NOTIFY_COOLDOWN_SECS;
+
+    // state
     private final Map<UUID, ArrayDeque<Vector>> velHistoryMps = new HashMap<>();
+    private final Map<UUID, Long> lastFuelNotify = new HashMap<>();
     private long tickCounter = 0L;
+
+    private static final Pattern HP_PATTERN = Pattern.compile("(?i)(?:hp|馬力)[:：]?\\s*([0-9]+(?:\\.[0-9]+)?)");
 
     @Override
     public void onEnable() {
+        HP_KEY = new NamespacedKey(this, "horsepower");
+        FUEL_KEY = new NamespacedKey(this, "fuel");
+        FUEL_CAP_KEY = new NamespacedKey(this, "fuelcap");
+
         saveDefaultConfig();
         reloadFromConfig();
 
-        HP_KEY = new NamespacedKey(this, "horsepower");
         Bukkit.getPluginManager().registerEvents(this, this);
 
         Bukkit.getScheduler().runTaskTimer(this, () -> {
@@ -90,33 +113,42 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     continue;
                 }
 
-                // --- engine hp (0 if none) ---
-                double hp = extractHorsepower(getEngineItem(p));
-
-                // --- mass etc. ---
+                // mass from scale
                 double scale = getScaleOrDefault(p, 1.0);
-                double massKg = BASE_MASS_KG * scale * scale;    // m = 70 * scale^2
+                double massKg = BASE_MASS_KG * scale * scale;
 
-                // --- current velocity ---
-                Vector velBt = p.getVelocity();                  // blocks/tick
+                // current velocity
+                Vector velBt = p.getVelocity();
                 double speedBt = velBt.length();
                 double speedMps = speedBt * 20.0;
                 if (speedMps < MIN_SPEED_MPS) speedMps = MIN_SPEED_MPS;
 
-                // --- air density (ISA troposphere 0–11 km) ---
+                // air density
                 double y = p.getLocation().getY();
-                double h = y - SEA_LEVEL_Y;                      // m
-                double rho = airDensityAtAltitude(h);            // kg/m^3
+                double h = y - SEA_LEVEL_Y;
+                double rho = airDensityAtAltitude(h);
 
-                // --- drag a = (1/2 * rho * CdA * v^2) / m  -- apply to ALL gliders ---
-                double cdA = CDA_BASE_M2 * DRAG_MULTIPLIER * scale; // scale-proportional
-                double aDrag = (0.5 * rho * cdA * speedMps * speedMps) / massKg; // m/s^2
+                // engine
+                ItemStack engine = getEngineItem(p);
+                double hp = extractHorsepower(engine);
 
-                // --- thrust a = P/(m v)  (sneak cuts to 0) ---
-                double powerW = p.isSneaking() ? 0.0 : (hp * WATT_PER_HP);
-                double aThrust = powerW / (massKg * speedMps);   // m/s^2
+                // drag (all gliders)
+                double cdA = CDA_BASE_M2 * DRAG_MULTIPLIER * scale;
+                double aDrag = (0.5 * rho * cdA * speedMps * speedMps) / massKg;
 
-                // --- update velocity ---
+                // thrust (sneak -> 0), fuel gate
+                boolean thrustAllowed = (hp > 0.0) && !p.isSneaking();
+                if (FUEL_ENABLED && thrustAllowed) {
+                    int fuel = getFuel(engine);
+                    if (fuel <= 0) {
+                        thrustAllowed = false;
+                        notifyFuelHint(p);
+                    }
+                }
+                double powerW = (thrustAllowed ? hp * WATT_PER_HP : 0.0);
+                double aThrust = powerW / (massKg * speedMps);
+
+                // update velocity
                 Vector dirFacing = p.getLocation().getDirection();
                 if (dirFacing.lengthSquared() > 1e-6) dirFacing.normalize();
                 Vector dirVel = speedBt > 1e-6 ? velBt.clone().normalize() : dirFacing.clone();
@@ -124,7 +156,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 double dvThrust_bt = (aThrust * DT) / 20.0;
                 double dvDrag_bt   = (aDrag   * DT) / 20.0;
 
-                double maxDv_bt = (MAX_ACCEL_MPS2 * DT) / 20.0; // safety clamp
+                double maxDv_bt = (MAX_ACCEL_MPS2 * DT) / 20.0;
                 if (dvThrust_bt > maxDv_bt) dvThrust_bt = maxDv_bt;
 
                 Vector newVel = velBt.clone();
@@ -135,82 +167,213 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 }
                 p.setVelocity(newVel);
 
-                // --- g-force: sample every 0.2 s (sampleTicks) and apply step damage ---
+                // fuel consumption per 0.2s
+                if (FUEL_ENABLED && thrustAllowed && (tickCounter % sampleTicks == 0)) {
+                    int cost = (int)Math.ceil(hp * FUEL_SAMPLE_COST_PER_HP);
+                    if (cost > 0) {
+                        int before = getFuel(engine);
+                        int after = Math.max(0, before - cost);
+                        setFuel(engine, after);
+                        if (after == 0 && before > 0) notifyFuelHint(p);
+                    }
+                }
+
+                // g-force damage per 0.2s
                 updateGForceDamage(p, velBt, sampleTicks);
             }
         }, 1L, 1L);
     }
 
-    private void reloadFromConfig() {
-        BASE_MASS_KG = getConfig().getDouble("physics.base_mass_kg", DEFAULT_BASE_MASS_KG);
-        WATT_PER_HP  = getConfig().getDouble("physics.watt_per_hp",   DEFAULT_WATT_PER_HP);
-        MIN_SPEED_MPS = getConfig().getDouble("physics.min_speed_mps", DEFAULT_MIN_SPEED_MPS);
-        MAX_ACCEL_MPS2 = getConfig().getDouble("physics.max_accel_mps2", DEFAULT_MAX_ACCEL_MPS2);
-
-        SEA_LEVEL_Y = getConfig().getDouble("aero.sea_level_y", DEFAULT_SEA_LEVEL_Y);
-        CDA_BASE_M2 = getConfig().getDouble("aero.cda_base_m2", DEFAULT_CDA_BASE_M2);
-        DRAG_MULTIPLIER = getConfig().getDouble("aero.drag_multiplier", DEFAULT_DRAG_MULTIPLIER);
-
-        GFORCE_SAMPLE_SECONDS = getConfig().getDouble("gforce.sample_seconds", DEFAULT_GFORCE_SAMPLE_SECONDS);
-        // death_threshold_g is unused in this spec
-        GFORCE_KILL_CREATIVE = getConfig().getBoolean("gforce.kill_in_creative", DEFAULT_GFORCE_KILL_CREATIVE);
+    // Commands
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        String name = command.getName().toLowerCase(Locale.ROOT);
+        if (name.equals("giveengine")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("Players only.");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (!p.hasPermission("elytrahp.giveengine")) {
+                p.sendMessage(Component.text("権限がありません", NamedTextColor.RED));
+                return true;
+            }
+            if (args.length != 1) {
+                p.sendMessage(Component.text("/giveengine <hp>", NamedTextColor.YELLOW));
+                return true;
+            }
+            double hp;
+            try {
+                hp = Double.parseDouble(args[0]);
+            } catch (NumberFormatException e) {
+                p.sendMessage(Component.text("数値で指定してください", NamedTextColor.RED));
+                return true;
+            }
+            if (hp <= 0) {
+                p.sendMessage(Component.text("hp は正の値にしてください", NamedTextColor.RED));
+                return true;
+            }
+            ItemStack engine = createEngineItem(hp);
+            p.getInventory().addItem(engine);
+            p.sendMessage(Component.text("エンジンを付与しました: " + new DecimalFormat("0.##").format(hp) + " hp", NamedTextColor.GREEN));
+            return true;
+        }
+        if (name.equals("elytrahp")) {
+            if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
+                if (!sender.hasPermission("elytrahp.admin")) {
+                    sender.sendMessage(Component.text("権限がありません", NamedTextColor.RED));
+                    return true;
+                }
+                reloadConfig();
+                reloadFromConfig();
+                sender.sendMessage(Component.text("ElytraHorsepower: config reloaded.", NamedTextColor.GREEN));
+                return true;
+            }
+            sender.sendMessage(Component.text("Usage: /elytrahp reload", NamedTextColor.YELLOW));
+            return true;
+        }
+        return false;
     }
 
-    // ISA troposphere (0–11 km): density from altitude
-    private double airDensityAtAltitude(double hMeters) {
-        // T = T0 - L*h ; P = P0 * (1 - L*h/T0)^(g/(R*L)) ; rho = P/(R*T)
-        double term = 1.0 - (L * hMeters) / T0;
-        if (term < 0.0) term = 0.0;
-        double exponent = G / (R * L); // ≈ 5.25588
-        double T = T0 - L * hMeters;
-        if (T < 1.0) T = 1.0; // safety
-        double P = P0 * Math.pow(term, exponent);
-        return P / (R * T);
+    // Right click to charge
+    @EventHandler
+    public void onRightClick(PlayerInteractEvent e) {
+        Action a = e.getAction();
+        if (!(a == Action.RIGHT_CLICK_AIR || a == Action.RIGHT_CLICK_BLOCK)) return;
+        if (e.getHand() != EquipmentSlot.HAND) return;
+        Player p = e.getPlayer();
+        ItemStack engine = getEngineItem(p);
+        if (engine == null) return;
+
+        if (!FUEL_ENABLED) {
+            p.sendActionBar(Component.text("燃料システムは無効です (config: fuel.enabled=false)", NamedTextColor.GRAY));
+            return;
+        }
+        PlayerInventory inv = p.getInventory();
+        if (countItem(inv, Material.COAL) >= FUEL_COAL_PER_CHARGE &&
+            countItem(inv, Material.GUNPOWDER) >= FUEL_GUNPOWDER_PER_CHARGE) {
+            removeItems(inv, Material.COAL, FUEL_COAL_PER_CHARGE);
+            removeItems(inv, Material.GUNPOWDER, FUEL_GUNPOWDER_PER_CHARGE);
+            int cap = getFuelCap(engine);
+            int newVal = Math.min(cap, getFuel(engine) + FUEL_POINTS_PER_CHARGE);
+            setFuel(engine, newVal);
+            p.sendActionBar(Component.text("チャージ +" + FUEL_POINTS_PER_CHARGE + "pt  (燃料: " + newVal + "/" + cap + ")", NamedTextColor.GOLD));
+        } else {
+            p.sendActionBar(Component.text("チャージに必要: 石炭×" + FUEL_COAL_PER_CHARGE + " + 火薬×" + FUEL_GUNPOWDER_PER_CHARGE, NamedTextColor.YELLOW));
+        }
     }
 
-    // 0.2s averaged acceleration → g, then **step damage every 0.2s** for 3.0–9.5 g
+    // Inventory helpers
+    private int countItem(PlayerInventory inv, Material m) {
+        int n = 0;
+        for (ItemStack it : inv.getContents()) if (it != null && it.getType() == m) n += it.getAmount();
+        return n;
+    }
+    private void removeItems(PlayerInventory inv, Material m, int amount) {
+        for (int i=0; i<inv.getSize() && amount>0; i++) {
+            ItemStack it = inv.getItem(i);
+            if (it == null || it.getType() != m) continue;
+            int take = Math.min(amount, it.getAmount());
+            it.setAmount(it.getAmount() - take);
+            if (it.getAmount() <= 0) inv.setItem(i, null);
+            amount -= take;
+        }
+    }
+
+    // Fuel on item
+    private int getFuel(ItemStack is) {
+        if (is == null) return 0;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return 0;
+        Integer v = meta.getPersistentDataContainer().get(FUEL_KEY, PersistentDataType.INTEGER);
+        return v == null ? 0 : Math.max(0, v);
+    }
+    private void setFuel(ItemStack is, int value) {
+        if (is == null) return;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return;
+        meta.getPersistentDataContainer().set(FUEL_KEY, PersistentDataType.INTEGER, Math.max(0, value));
+        is.setItemMeta(meta);
+    }
+    private int getFuelCap(ItemStack is) {
+        if (is == null) return FUEL_CAPACITY;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return FUEL_CAPACITY;
+        Integer v = meta.getPersistentDataContainer().get(FUEL_CAP_KEY, PersistentDataType.INTEGER);
+        return v == null ? FUEL_CAPACITY : v;
+    }
+
+    private void notifyFuelHint(Player p) {
+        long now = System.currentTimeMillis();
+        long last = lastFuelNotify.getOrDefault(p.getUniqueId(), 0L);
+        if ((now - last) < (long)(FUEL_NOTIFY_COOLDOWN_SECS * 1000.0)) return;
+        lastFuelNotify.put(p.getUniqueId(), now);
+        p.sendActionBar(Component.text("燃料切れ: エンジンを手に持って右クリック → 石炭×" + FUEL_COAL_PER_CHARGE + " + 火薬×" + FUEL_GUNPOWDER_PER_CHARGE + " で +" + FUEL_POINTS_PER_CHARGE + "pt", NamedTextColor.RED));
+    }
+
+    // g-force damage
     private void updateGForceDamage(Player p, Vector velBtCurrent, int sampleTicks) {
         UUID id = p.getUniqueId();
         ArrayDeque<Vector> q = velHistoryMps.computeIfAbsent(id, k -> new ArrayDeque<>(sampleTicks + 1));
 
-        // push current velocity (m/s)
         Vector vNowMps = velBtCurrent.clone().multiply(20.0);
         q.addLast(vNowMps);
         if (q.size() > sampleTicks + 1) q.removeFirst();
 
-        // apply only each 0.2s boundary
         if (tickCounter % sampleTicks != 0) return;
         if (q.size() < sampleTicks + 1) return;
 
         Vector vPast = q.peekFirst().clone();
         Vector dv = vNowMps.clone().subtract(vPast);
-        double a = dv.length() / (sampleTicks * DT); // m/s^2 (includes turn)
+        double a = dv.length() / (sampleTicks * DT);
         double gForce = a / G;
 
-        double dmg = computeStepDamage(gForce);
+        double dmg = computeDamageFromTable(gForce);
         if (dmg <= 0) return;
 
         if (!GFORCE_KILL_CREATIVE && (p.getGameMode() == GameMode.CREATIVE || p.getGameMode() == GameMode.SPECTATOR)) return;
 
         p.damage(dmg);
-        p.sendActionBar(Component.text(String.format("%.1f g : -%.1f", Math.min(gForce, 9.5), dmg), NamedTextColor.RED));
+        p.sendActionBar(Component.text(String.format("%.1f g : -%.1f", Math.min(gForce, 100.0), dmg), NamedTextColor.RED));
     }
 
-    // Spec: 3.0g→3.0, 3.5→4.5, 4.0→6.0, ... up to 9.5→22.5 (0.5g step adds +1.5)
-    private double computeStepDamage(double g) {
-        if (g < 3.0) return 0.0;
-        double gClamped = Math.min(g, 9.5);
-        double step = Math.floor((gClamped - 3.0) / 0.5); // 0..13
-        return 3.0 + step * 1.5;
+    private static class GStep { double g; double dmg; GStep(double g, double dmg, boolean dummy){ this.g=g; this.dmg=dmg; } }
+
+    private double computeDamageFromTable(double g) {
+        double best = 0.0;
+        for (GStep s : gDamageTable) {
+            if (g >= s.g && s.dmg > best) best = s.dmg;
+        }
+        return best;
     }
 
-    // main/offhand engine item
+    // Physics
+    private double airDensityAtAltitude(double hMeters) {
+        double term = 1.0 - (L * hMeters) / T0;
+        if (term < 0.0) term = 0.0;
+        double exponent = G / (R * L);
+        double T = T0 - L * hMeters;
+        if (T < 1.0) T = 1.0;
+        double P = P0 * Math.pow(term, exponent);
+        return P / (R * T);
+    }
+
+    private double getScaleOrDefault(Player p, double def) {
+        try {
+            Attribute scaleAttrEnum = Attribute.valueOf("GENERIC_SCALE");
+            AttributeInstance inst = p.getAttribute(scaleAttrEnum);
+            if (inst != null) return inst.getValue();
+        } catch (IllegalArgumentException ignored) {}
+        return def;
+    }
+
+    // Engine utils
     private ItemStack getEngineItem(Player p) {
         ItemStack main = p.getInventory().getItemInMainHand();
         if (isEngine(main)) return main;
         ItemStack off = p.getInventory().getItemInOffHand();
         if (isEngine(off)) return off;
-        return main;
+        return null;
     }
 
     private boolean isEngine(ItemStack is) {
@@ -259,42 +422,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         return null;
     }
 
-    private double getScaleOrDefault(Player p, double def) {
-        try {
-            Attribute scaleAttrEnum = Attribute.valueOf("GENERIC_SCALE");
-            AttributeInstance inst = p.getAttribute(scaleAttrEnum);
-            if (inst != null) return inst.getValue();
-        } catch (IllegalArgumentException ignored) {}
-        return def;
-    }
-
-    @Override
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage("Players only.");
-            return true;
-        }
-        Player p = (Player) sender;
-        if (!p.hasPermission("elytrahp.giveengine")) {
-            p.sendMessage(Component.text("権限がありません", NamedTextColor.RED));
-            return true;
-        }
-        if (args.length != 1) {
-            p.sendMessage(Component.text("/giveengine <hp>", NamedTextColor.YELLOW));
-            return true;
-        }
-        double hp;
-        try {
-            hp = Double.parseDouble(args[0]);
-        } catch (NumberFormatException e) {
-            p.sendMessage(Component.text("数値で指定してください", NamedTextColor.RED));
-            return true;
-        }
-        if (hp <= 0) {
-            p.sendMessage(Component.text("hp は正の値にしてください", NamedTextColor.RED));
-            return true;
-        }
-
+    private ItemStack createEngineItem(double hp) {
         ItemStack engine = new ItemStack(Material.BLAZE_ROD);
         ItemMeta meta = engine.getItemMeta();
         DecimalFormat df = new DecimalFormat("0.##");
@@ -303,11 +431,55 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         lore.add(Component.text("馬力: " + df.format(hp) + " hp", NamedTextColor.YELLOW));
         lore.add(Component.text("手に持って滑空で加速 (スニークでカット)", NamedTextColor.GRAY));
         meta.lore(lore);
-        meta.getPersistentDataContainer().set(HP_KEY, PersistentDataType.DOUBLE, hp);
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        pdc.set(HP_KEY, PersistentDataType.DOUBLE, hp);
+        pdc.set(FUEL_KEY, PersistentDataType.INTEGER, 0);
+        pdc.set(FUEL_CAP_KEY, PersistentDataType.INTEGER, FUEL_CAPACITY);
         engine.setItemMeta(meta);
+        return engine;
+    }
 
-        p.getInventory().addItem(engine);
-        p.sendMessage(Component.text("エンジンを付与しました: " + df.format(hp) + " hp", NamedTextColor.GREEN));
-        return true;
+    // Config loader
+    private void reloadFromConfig() {
+        BASE_MASS_KG = getConfig().getDouble("physics.base_mass_kg", DEFAULT_BASE_MASS_KG);
+        WATT_PER_HP  = getConfig().getDouble("physics.watt_per_hp",   DEFAULT_WATT_PER_HP);
+        MIN_SPEED_MPS = getConfig().getDouble("physics.min_speed_mps", DEFAULT_MIN_SPEED_MPS);
+        MAX_ACCEL_MPS2 = getConfig().getDouble("physics.max_accel_mps2", DEFAULT_MAX_ACCEL_MPS2);
+
+        SEA_LEVEL_Y = getConfig().getDouble("aero.sea_level_y", DEFAULT_SEA_LEVEL_Y);
+        CDA_BASE_M2 = getConfig().getDouble("aero.cda_base_m2", DEFAULT_CDA_BASE_M2);
+        DRAG_MULTIPLIER = getConfig().getDouble("aero.drag_multiplier", DEFAULT_DRAG_MULTIPLIER);
+
+        GFORCE_SAMPLE_SECONDS = getConfig().getDouble("gforce.sample_seconds", DEFAULT_GFORCE_SAMPLE_SECONDS);
+        GFORCE_KILL_CREATIVE = getConfig().getBoolean("gforce.kill_in_creative", DEFAULT_GFORCE_KILL_CREATIVE);
+
+        // g damage table
+        gDamageTable.clear();
+        List<Map<?,?>> list = getConfig().getMapList("gforce.damage_table");
+        if (list != null && !list.isEmpty()) {
+            for (Map<?,?> m : list) {
+                try {
+                    double g = Double.parseDouble(String.valueOf(m.get("g")));
+                    double dmg = Double.parseDouble(String.valueOf(m.get("dmg")));
+                    gDamageTable.add(new GStep(g, dmg));
+                } catch (Exception ignored) {}
+            }
+            gDamageTable.sort(Comparator.comparingDouble(s -> s.g));
+        } else {
+            for (int i=0;i<=13;i++) {
+                double g = 3.0 + 0.5*i;
+                double dmg = 3.0 + 1.5*i;
+                gDamageTable.add(new GStep(g, dmg));
+            }
+        }
+
+        // fuel
+        FUEL_ENABLED = getConfig().getBoolean("fuel.enabled", true);
+        FUEL_CAPACITY = getConfig().getInt("fuel.capacity", 3000);
+        FUEL_SAMPLE_COST_PER_HP = getConfig().getDouble("fuel.sample_cost_per_hp", 1.0);
+        FUEL_COAL_PER_CHARGE = getConfig().getInt("fuel.charge.coal", 1);
+        FUEL_GUNPOWDER_PER_CHARGE = getConfig().getInt("fuel.charge.gunpowder", 2);
+        FUEL_POINTS_PER_CHARGE = getConfig().getInt("fuel.charge.points", 300);
+        FUEL_NOTIFY_COOLDOWN_SECS = getConfig().getDouble("fuel.notify_cooldown_seconds", 2.0);
     }
 }

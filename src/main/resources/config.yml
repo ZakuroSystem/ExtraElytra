@@ -11,5 +11,29 @@ aero:
 
 gforce:
   sample_seconds: 0.2
-  death_threshold_g: 1.0e9
   kill_in_creative: false
+  damage_table:
+    - { g: 3.0, dmg: 3.0 }
+    - { g: 3.5, dmg: 4.5 }
+    - { g: 4.0, dmg: 6.0 }
+    - { g: 4.5, dmg: 7.5 }
+    - { g: 5.0, dmg: 9.0 }
+    - { g: 5.5, dmg: 10.5 }
+    - { g: 6.0, dmg: 12.0 }
+    - { g: 6.5, dmg: 13.5 }
+    - { g: 7.0, dmg: 15.0 }
+    - { g: 7.5, dmg: 16.5 }
+    - { g: 8.0, dmg: 18.0 }
+    - { g: 8.5, dmg: 19.5 }
+    - { g: 9.0, dmg: 21.0 }
+    - { g: 9.5, dmg: 22.5 }
+
+fuel:
+  enabled: true
+  capacity: 3000
+  sample_cost_per_hp: 1.0
+  charge:
+    coal: 1
+    gunpowder: 2
+    points: 300
+  notify_cooldown_seconds: 2.0
