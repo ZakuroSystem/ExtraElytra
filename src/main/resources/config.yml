@@ -1,0 +1,15 @@
+physics:
+  base_mass_kg: 70.0
+  watt_per_hp: 745.699872
+  min_speed_mps: 0.5
+  max_accel_mps2: 50.0
+
+aero:
+  sea_level_y: 64.0
+  cda_base_m2: 0.70
+  drag_multiplier: 1.0
+
+gforce:
+  sample_seconds: 0.2
+  death_threshold_g: 1.0e9
+  kill_in_creative: false
