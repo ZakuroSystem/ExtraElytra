@@ -11,3 +11,4 @@ Build: `mvn -q -DskipTests package`
 - Lapis-block engine repairs with configurable lifespan limits
 - Sneak-right-click bulk fuel charging, limited by `fuel.max_sets_per_click`
 - Optional neutralization of vanilla air and elytra drag via the `vanilla` config section
+- Action-bar HUD showing fuel and remaining life while gliding
