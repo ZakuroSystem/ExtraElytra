@@ -49,6 +49,51 @@ fuel:
   bulk_charge_on_sneak: true      # true でスニーク右クリック時にまとめて最大までチャージ
   max_sets_per_click: 9999        # 1クリックで消費できる燃料セットの上限（安全用）
 
+# thrust vs altitude
+thrust_altitude:
+  enabled: true
+  model: "rho_power"
+  alpha: 1.0
+  min_factor: 0.40
+  max_factor: 1.00
+
+# boost mode
+boost:
+  enabled: true
+  trigger: "left_click_air"
+  duration_sec: 4.0
+  hp_multiplier: 1.20
+  fuel_multiplier: 1.30
+  activation_cost:
+    redstone: 1
+  cancel_if_eco: true
+  sound: "minecraft:item.totem.use"
+  cooldown_sec: 0.0
+
+# eco mode
+eco:
+  enabled: true
+  toggle_trigger: "right_click_air"
+  hp_multiplier: 0.65
+  fuel_multiplier: 0.60
+  cancel_if_boost: true
+  sound_on: "minecraft:block.note_block.hat"
+  sound_off: "minecraft:block.note_block.bass"
+
+# zones
+zones:
+  enabled: true
+  list:
+    - id: "arena"
+      world: "world"
+      type: "cuboid"
+      min: { x: -100, y: 50, z: -100 }
+      max: { x: 100, y: 256, z: 100 }
+      drag_multiplier: 0.85
+      fuel_multiplier: 0.90
+      speed_cap_kmh: 220
+      priority: 10
+
 ui:
   player_info_permission: "elytrahp.info"
   info_format: "<hp>hp | v=<speed_kmh>km/h | fuel=<fuel>/<cap> | life=<life_remain>min | g=<g> | mode=<mode>"

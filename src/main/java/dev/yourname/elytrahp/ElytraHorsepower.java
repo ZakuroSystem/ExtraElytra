@@ -96,6 +96,33 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private static class GStep { double g; double dmg; GStep(double g, double dmg){this.g=g; this.dmg=dmg;} }
     private List<GStep> gDamageTable = new ArrayList<>();
 
+    private static class Zone {
+        String id;
+        double minX, minY, minZ, maxX, maxY, maxZ;
+        double dragMul, fuelMul;
+        Double speedCapMps;
+        int priority;
+        boolean contains(double x, double y, double z) {
+            return x>=minX && x<=maxX && y>=minY && y<=maxY && z>=minZ && z<=maxZ;
+        }
+    }
+
+    private Zone findZone(org.bukkit.Location loc) {
+        if (!ZONES_ENABLED) return null;
+        List<Zone> list = zonesByWorld.get(loc.getWorld().getName());
+        if (list == null) return null;
+        double x = loc.getX();
+        double y = loc.getY();
+        double z = loc.getZ();
+        Zone best = null;
+        for (Zone zc : list) {
+            if (zc.contains(x, y, z)) {
+                if (best == null || zc.priority < best.priority) best = zc;
+            }
+        }
+        return best;
+    }
+
     // fuel config
     private boolean FUEL_ENABLED;
     private int FUEL_CAPACITY;
@@ -116,6 +143,35 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private int LIFE_MINUTES_PER_ITEM;
     private double LIFE_NOTIFY_COOLDOWN_SECS;
 
+    // thrust vs altitude
+    private boolean THRUST_ALT_ENABLED;
+    private String  THRUST_MODEL;
+    private double  THRUST_ALPHA;
+    private double  THRUST_MIN_FACTOR;
+    private double  THRUST_MAX_FACTOR;
+
+    // boost config
+    private boolean BOOST_ENABLED;
+    private double  BOOST_DURATION_SEC;
+    private double  BOOST_HP_MULT;
+    private double  BOOST_FUEL_MULT;
+    private int     BOOST_COST_REDSTONE;
+    private boolean BOOST_CANCEL_IF_ECO;
+    private String  BOOST_SOUND;
+    private double  BOOST_COOLDOWN_SEC;
+
+    // eco config
+    private boolean ECO_ENABLED;
+    private double  ECO_HP_MULT;
+    private double  ECO_FUEL_MULT;
+    private boolean ECO_CANCEL_IF_BOOST;
+    private String  ECO_SOUND_ON;
+    private String  ECO_SOUND_OFF;
+
+    // zones config
+    private boolean ZONES_ENABLED;
+    private Map<String, List<Zone>> zonesByWorld = new HashMap<>();
+
     // state
     private final Map<UUID, ArrayDeque<Vector>> velHistoryMps = new HashMap<>();
     private final Map<UUID, Long> lastFuelNotify = new HashMap<>();
@@ -124,6 +180,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private final Map<UUID, Long> lastStatus = new HashMap<>();
     private final Map<UUID, Long> lastGWarn = new HashMap<>();
     private final Map<UUID, Double> lastGValue = new HashMap<>();
+    private final Map<UUID, Boolean> ecoEnabled = new HashMap<>();
+    private final Map<UUID, Long> boostUntilTick = new HashMap<>();
+    private final Map<UUID, Long> lastBoostUse = new HashMap<>();
     private static final long STATUS_INTERVAL_MS = 3000L;
     private long tickCounter = 0L;
 
@@ -223,11 +282,23 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     }
                 }
 
-                // drag (all gliders)
-                double cdA = CDA_BASE_M2 * DRAG_MULTIPLIER * scale;
-                double aDrag = (0.5 * rho * cdA * speedMps * speedMps) / massKg;
+                // zone
+                Zone zone = findZone(p.getLocation());
+                double dragZoneMul = 1.0;
+                double fuelZoneMul = 1.0;
+                Double speedCapMps = null;
+                if (zone != null) {
+                    dragZoneMul = zone.dragMul;
+                    fuelZoneMul = zone.fuelMul;
+                    speedCapMps = zone.speedCapMps;
+                }
 
-                // thrust (sneak -> 0), fuel & life gate
+                // drag
+                double cdA = CDA_BASE_M2 * DRAG_MULTIPLIER * scale;
+                double aDragBase = (0.5 * rho * cdA * speedMps * speedMps) / massKg;
+                double aDrag = aDragBase * dragZoneMul;
+
+                // thrust gating
                 boolean thrustAllowed = (hp > 0.0) && !p.isSneaking();
                 if (FUEL_ENABLED && thrustAllowed) {
                     int fuel = getFuel(engine);
@@ -256,12 +327,49 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 double powerW = (thrustAllowed ? hp * WATT_PER_HP : 0.0);
                 double aThrust = powerW / (massKg * speedMps);
 
+                // altitude factor
+                if (THRUST_ALT_ENABLED) {
+                    double rho0 = airDensityAtAltitude(0.0);
+                    double rhoRel = Math.max(0.0, Math.min(1.0, rho / rho0));
+                    double fAlt = Math.pow(rhoRel, THRUST_ALPHA);
+                    if (fAlt < THRUST_MIN_FACTOR) fAlt = THRUST_MIN_FACTOR;
+                    if (fAlt > THRUST_MAX_FACTOR) fAlt = THRUST_MAX_FACTOR;
+                    aThrust *= fAlt;
+                }
+
+                // mode multipliers
+                double modeHpMul = 1.0;
+                double modeFuelMul = 1.0;
+                UUID id = p.getUniqueId();
+                if (boostUntilTick.getOrDefault(id, 0L) > tickCounter) {
+                    modeHpMul = BOOST_HP_MULT;
+                    modeFuelMul = BOOST_FUEL_MULT;
+                } else if (ecoEnabled.getOrDefault(id, false)) {
+                    modeHpMul = ECO_HP_MULT;
+                    modeFuelMul = ECO_FUEL_MULT;
+                }
+                double aThrustMode = aThrust * modeHpMul;
+
+                // speed cap ratio
+                double r = 1.0;
+                if (speedCapMps != null) {
+                    double v = speedMps;
+                    double cap = speedCapMps;
+                    double predicted = v + (aThrustMode - aDrag) * DT;
+                    if (predicted > cap) {
+                        r = (cap - (v - aDrag * DT)) / (aThrustMode * DT);
+                        if (r < 0) r = 0;
+                        if (r > 1) r = 1;
+                    }
+                }
+                double aThrustEff = aThrustMode * r;
+
                 // update velocity
                 Vector dirFacing = p.getLocation().getDirection();
                 if (dirFacing.lengthSquared() > 1e-6) dirFacing.normalize();
                 Vector dirVel = speedBt > 1e-6 ? velBt.clone().normalize() : dirFacing.clone();
 
-                double dvThrust_bt = (aThrust * DT) / 20.0;
+                double dvThrust_bt = (aThrustEff * DT) / 20.0;
                 double dvDrag_bt   = (aDrag   * DT) / 20.0;
 
                 double maxDv_bt = (MAX_ACCEL_MPS2 * DT) / 20.0;
@@ -277,7 +385,10 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
                 // fuel consumption per 0.2s
                 if (FUEL_ENABLED && thrustAllowed && (tickCounter % sampleTicks == 0)) {
-                    int cost = (int)Math.ceil(hp * FUEL_SAMPLE_COST_PER_HP);
+                    double base = hp * FUEL_SAMPLE_COST_PER_HP;
+                    double modeCost = base * modeFuelMul;
+                    double zoneCost = modeCost * fuelZoneMul;
+                    int cost = (int)Math.ceil(zoneCost * r);
                     if (cost > 0) {
                         int before = getFuel(engine);
                         int after = Math.max(0, before - cost);
@@ -362,6 +473,12 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     int usedTicks = getLifeUsedTicks(engine);
                     int remain = (total > 0) ? total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0) : -1;
                     double gVal = lastGValue.getOrDefault(p.getUniqueId(), 0.0);
+                    UUID id = p.getUniqueId();
+                    String mode = "NORMAL";
+                    if (boostUntilTick.getOrDefault(id, 0L) > tickCounter) mode = "BOOST";
+                    else if (ecoEnabled.getOrDefault(id, false)) mode = "ECO";
+                    Zone z = findZone(p.getLocation());
+                    String zoneId = (z != null ? z.id : "");
                     String out = UI_INFO_FORMAT
                             .replace("<hp>", new DecimalFormat("0.##").format(hp))
                             .replace("<speed_kmh>", String.format("%.1f", speedKmh))
@@ -369,7 +486,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                             .replace("<cap>", String.valueOf(cap))
                             .replace("<life_remain>", (total > 0 ? String.valueOf(remain) : "∞"))
                             .replace("<g>", String.format("%.1f", gVal))
-                            .replace("<mode>", "NORMAL");
+                            .replace("<mode>", mode)
+                            .replace("<zone>", zoneId);
                     p.sendMessage(Component.text(out, NamedTextColor.AQUA));
                     return true;
                 }
@@ -430,13 +548,24 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
     // Right click to charge
     @EventHandler
-    public void onRightClick(PlayerInteractEvent e) {
+    public void onPlayerInteract(PlayerInteractEvent e) {
         Action a = e.getAction();
-        if (!(a == Action.RIGHT_CLICK_AIR || a == Action.RIGHT_CLICK_BLOCK)) return;
         if (e.getHand() != EquipmentSlot.HAND) return;
         Player p = e.getPlayer();
         ItemStack engine = getEngineItem(p);
         if (engine == null) return;
+
+        // gliding actions
+        if (p.isGliding()) {
+            if (a == Action.LEFT_CLICK_AIR && BOOST_ENABLED) {
+                handleBoost(p, engine);
+            } else if (a == Action.RIGHT_CLICK_AIR && ECO_ENABLED) {
+                handleEcoToggle(p);
+            }
+            return;
+        }
+
+        if (!(a == Action.RIGHT_CLICK_AIR || a == Action.RIGHT_CLICK_BLOCK)) return;
 
         PlayerInventory inv = p.getInventory();
 
@@ -664,6 +793,53 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         sendActionBarMessage(p, Component.text("修理 +" + minutes + "分（" + LIFE_REPAIR_MATERIAL + " " + items + " 個） 残り: " + remain + "分 / 修理可能残り: " + poolAfter + "分", NamedTextColor.GOLD));
     }
 
+    private void handleBoost(Player p, ItemStack engine) {
+        long now = tickCounter;
+        UUID id = p.getUniqueId();
+        long until = boostUntilTick.getOrDefault(id, 0L);
+        long last = lastBoostUse.getOrDefault(id, 0L);
+        long cooldownTicks = (long)Math.round(BOOST_COOLDOWN_SEC * 20.0);
+        if (now < until) {
+            sendActionBarMessage(p, Component.text("BOOST継続中", NamedTextColor.YELLOW));
+            return;
+        }
+        if (now - last < cooldownTicks) {
+            return;
+        }
+        PlayerInventory inv = p.getInventory();
+        int need = BOOST_COST_REDSTONE;
+        if (countItem(inv, Material.REDSTONE) < need) {
+            sendActionBarMessage(p, Component.text("ブーストに必要: レッドストーン×" + need, NamedTextColor.YELLOW));
+            return;
+        }
+        if (need > 0) removeItems(inv, Material.REDSTONE, need);
+        if (ecoEnabled.getOrDefault(id, false) && BOOST_CANCEL_IF_ECO) {
+            ecoEnabled.put(id, false);
+        }
+        long durTicks = (long)Math.round(BOOST_DURATION_SEC * 20.0);
+        boostUntilTick.put(id, now + durTicks);
+        lastBoostUse.put(id, now);
+        if (BOOST_SOUND != null && !BOOST_SOUND.isEmpty()) p.playSound(p.getLocation(), BOOST_SOUND, 1f, 1f);
+        sendActionBarMessage(p, Component.text("+20% 出力 (" + BOOST_DURATION_SEC + "s)", NamedTextColor.GOLD));
+    }
+
+    private void handleEcoToggle(Player p) {
+        UUID id = p.getUniqueId();
+        boolean on = ecoEnabled.getOrDefault(id, false);
+        if (on) {
+            ecoEnabled.put(id, false);
+            if (ECO_SOUND_OFF != null && !ECO_SOUND_OFF.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_OFF, 1f, 1f);
+            sendActionBarMessage(p, Component.text("ECO OFF", NamedTextColor.GREEN));
+        } else {
+            if (boostUntilTick.getOrDefault(id, 0L) > tickCounter && ECO_CANCEL_IF_BOOST) {
+                boostUntilTick.put(id, 0L);
+            }
+            ecoEnabled.put(id, true);
+            if (ECO_SOUND_ON != null && !ECO_SOUND_ON.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_ON, 1f, 1f);
+            sendActionBarMessage(p, Component.text("ECO ON", NamedTextColor.GOLD));
+        }
+    }
+
     private void sendActionBarMessage(Player p, Component c) {
         p.sendActionBar(c);
         lastWarn.put(p.getUniqueId(), System.currentTimeMillis());
@@ -887,6 +1063,65 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         LIFE_REPAIR_MATERIAL = mat;
         LIFE_MINUTES_PER_ITEM = getConfig().getInt("life.minutes_per_item", 1);
         LIFE_NOTIFY_COOLDOWN_SECS = getConfig().getDouble("life.notify_cooldown_seconds", 2.0);
+
+        // thrust altitude
+        THRUST_ALT_ENABLED = getConfig().getBoolean("thrust_altitude.enabled", true);
+        THRUST_MODEL = getConfig().getString("thrust_altitude.model", "rho_power");
+        THRUST_ALPHA = getConfig().getDouble("thrust_altitude.alpha", 1.0);
+        THRUST_MIN_FACTOR = getConfig().getDouble("thrust_altitude.min_factor", 0.40);
+        THRUST_MAX_FACTOR = getConfig().getDouble("thrust_altitude.max_factor", 1.00);
+
+        // boost
+        BOOST_ENABLED = getConfig().getBoolean("boost.enabled", true);
+        BOOST_DURATION_SEC = getConfig().getDouble("boost.duration_sec", 4.0);
+        BOOST_HP_MULT = getConfig().getDouble("boost.hp_multiplier", 1.20);
+        BOOST_FUEL_MULT = getConfig().getDouble("boost.fuel_multiplier", 1.30);
+        BOOST_COST_REDSTONE = getConfig().getInt("boost.activation_cost.redstone", 1);
+        BOOST_CANCEL_IF_ECO = getConfig().getBoolean("boost.cancel_if_eco", true);
+        BOOST_SOUND = getConfig().getString("boost.sound", "minecraft:item.totem.use");
+        BOOST_COOLDOWN_SEC = getConfig().getDouble("boost.cooldown_sec", 0.0);
+
+        // eco
+        ECO_ENABLED = getConfig().getBoolean("eco.enabled", true);
+        ECO_HP_MULT = getConfig().getDouble("eco.hp_multiplier", 0.65);
+        ECO_FUEL_MULT = getConfig().getDouble("eco.fuel_multiplier", 0.60);
+        ECO_CANCEL_IF_BOOST = getConfig().getBoolean("eco.cancel_if_boost", true);
+        ECO_SOUND_ON = getConfig().getString("eco.sound_on", "minecraft:block.note_block.hat");
+        ECO_SOUND_OFF = getConfig().getString("eco.sound_off", "minecraft:block.note_block.bass");
+
+        // zones
+        ZONES_ENABLED = getConfig().getBoolean("zones.enabled", true);
+        zonesByWorld.clear();
+        if (ZONES_ENABLED) {
+            List<Map<?,?>> zl = getConfig().getMapList("zones.list");
+            for (Map<?,?> m : zl) {
+                try {
+                    Zone z = new Zone();
+                    z.id = String.valueOf(m.get("id"));
+                    z.priority = ((Number)m.getOrDefault("priority", 0)).intValue();
+                    z.dragMul = m.get("drag_multiplier") == null ? 1.0 : Double.parseDouble(String.valueOf(m.get("drag_multiplier")));
+                    z.fuelMul = m.get("fuel_multiplier") == null ? 1.0 : Double.parseDouble(String.valueOf(m.get("fuel_multiplier")));
+                    Object capObj = m.get("speed_cap_kmh");
+                    if (capObj != null && !capObj.equals("null")) {
+                        double capKmh = Double.parseDouble(String.valueOf(capObj));
+                        z.speedCapMps = capKmh / 3.6;
+                    }
+                    Map<?,?> min = (Map<?,?>)m.get("min");
+                    Map<?,?> max = (Map<?,?>)m.get("max");
+                    z.minX = Double.parseDouble(String.valueOf(min.get("x")));
+                    z.minY = Double.parseDouble(String.valueOf(min.get("y")));
+                    z.minZ = Double.parseDouble(String.valueOf(min.get("z")));
+                    z.maxX = Double.parseDouble(String.valueOf(max.get("x")));
+                    z.maxY = Double.parseDouble(String.valueOf(max.get("y")));
+                    z.maxZ = Double.parseDouble(String.valueOf(max.get("z")));
+                    String world = String.valueOf(m.get("world"));
+                    zonesByWorld.computeIfAbsent(world, k -> new ArrayList<>()).add(z);
+                } catch (Exception ignored) {}
+            }
+            for (List<Zone> l : zonesByWorld.values()) {
+                l.sort(Comparator.comparingInt(z -> z.priority));
+            }
+        }
 
         // ui
         UI_INFO_PERMISSION = getConfig().getString("ui.player_info_permission", "elytrahp.info");
