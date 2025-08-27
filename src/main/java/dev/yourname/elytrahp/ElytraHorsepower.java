@@ -1098,7 +1098,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 try {
                     Zone z = new Zone();
                     z.id = String.valueOf(m.get("id"));
-                    z.priority = ((Number)m.getOrDefault("priority", 0)).intValue();
+                    Object prObj = m.get("priority");
+                    z.priority = prObj == null ? 0 : ((Number) prObj).intValue();
                     z.dragMul = m.get("drag_multiplier") == null ? 1.0 : Double.parseDouble(String.valueOf(m.get("drag_multiplier")));
                     z.fuelMul = m.get("fuel_multiplier") == null ? 1.0 : Double.parseDouble(String.valueOf(m.get("fuel_multiplier")));
                     Object capObj = m.get("speed_cap_kmh");
