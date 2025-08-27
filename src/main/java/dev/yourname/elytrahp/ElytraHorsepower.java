@@ -58,6 +58,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private static final double DEFAULT_GFORCE_SAMPLE_SECONDS = 0.2;
     private static final boolean DEFAULT_GFORCE_KILL_CREATIVE = false;
     private static final double DEFAULT_GFORCE_DAMAGE_START_G = 3.0;
+    private static final boolean DEFAULT_GFORCE_WARN_ENABLED = true;
+    private static final double DEFAULT_GFORCE_WARN_THRESHOLD_G = 2.8;
+    private static final double DEFAULT_GFORCE_WARN_INTERVAL_SEC = 0.6;
+    private static final String DEFAULT_GFORCE_WARN_SOUND = "minecraft:block.note_block.snare";
+    private static final String DEFAULT_GFORCE_WARN_ACTIONBAR = "警告: 加速度 {g} g";
 
     // Physics constants
     private static final double G = 9.80665;
@@ -81,6 +86,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private double GFORCE_SAMPLE_SECONDS;
     private boolean GFORCE_KILL_CREATIVE;
     private double GFORCE_DAMAGE_START_G;
+    private boolean GFORCE_WARN_ENABLED;
+    private double GFORCE_WARN_THRESHOLD_G;
+    private double GFORCE_WARN_INTERVAL_SEC;
+    private String GFORCE_WARN_SOUND;
+    private String GFORCE_WARN_ACTIONBAR;
 
     // g-damage table
     private static class GStep { double g; double dmg; GStep(double g, double dmg){this.g=g; this.dmg=dmg;} }
@@ -112,6 +122,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private final Map<UUID, Long> lastLifeNotify = new HashMap<>();
     private final Map<UUID, Long> lastWarn = new HashMap<>();
     private final Map<UUID, Long> lastStatus = new HashMap<>();
+    private final Map<UUID, Long> lastGWarn = new HashMap<>();
+    private final Map<UUID, Double> lastGValue = new HashMap<>();
     private static final long STATUS_INTERVAL_MS = 3000L;
     private long tickCounter = 0L;
 
@@ -121,6 +133,10 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private boolean NEUTRALIZE_VANILLA_DRAG;
     private double VANILLA_AIR_DAMP;
     private double VANILLA_ELYTRA_DAMP;
+
+    // ui
+    private String UI_INFO_PERMISSION;
+    private String UI_INFO_FORMAT;
 
     @Override
     public void onEnable() {
@@ -320,6 +336,41 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     reloadConfig();
                     reloadFromConfig();
                     sender.sendMessage(Component.text("ElytraHorsepower: config reloaded.", NamedTextColor.GREEN));
+                    return true;
+                }
+                if (args[0].equalsIgnoreCase("info")) {
+                    if (!(sender instanceof Player)) {
+                        sender.sendMessage(Component.text("Players only.", NamedTextColor.RED));
+                        return true;
+                    }
+                    Player p = (Player)sender;
+                    if (!p.hasPermission(UI_INFO_PERMISSION)) {
+                        p.sendMessage(Component.text("権限がありません", NamedTextColor.RED));
+                        return true;
+                    }
+                    ItemStack engine = getEngineItem(p);
+                    if (engine == null) {
+                        p.sendMessage(Component.text("エンジンを手に持ってください", NamedTextColor.YELLOW));
+                        return true;
+                    }
+                    double hp = extractHorsepower(engine);
+                    double speedKmh = p.getVelocity().length() * 20.0 * 3.6;
+                    int fuel = getFuel(engine);
+                    int cap = getFuelCap(engine);
+                    int total = getLifeTotal(engine);
+                    int repaired = getLifeRepaired(engine);
+                    int usedTicks = getLifeUsedTicks(engine);
+                    int remain = (total > 0) ? total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0) : -1;
+                    double gVal = lastGValue.getOrDefault(p.getUniqueId(), 0.0);
+                    String out = UI_INFO_FORMAT
+                            .replace("<hp>", new DecimalFormat("0.##").format(hp))
+                            .replace("<speed_kmh>", String.format("%.1f", speedKmh))
+                            .replace("<fuel>", String.valueOf(fuel))
+                            .replace("<cap>", String.valueOf(cap))
+                            .replace("<life_remain>", (total > 0 ? String.valueOf(remain) : "∞"))
+                            .replace("<g>", String.format("%.1f", gVal))
+                            .replace("<mode>", "NORMAL");
+                    p.sendMessage(Component.text(out, NamedTextColor.AQUA));
                     return true;
                 }
                 if (args[0].equalsIgnoreCase("life")) {
@@ -643,6 +694,21 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         double a = dv.length() / (sampleTicks * DT);
         double gForce = a / G;
 
+        lastGValue.put(id, gForce);
+
+        if (GFORCE_WARN_ENABLED && gForce >= GFORCE_WARN_THRESHOLD_G) {
+            long now = System.currentTimeMillis();
+            long last = lastGWarn.getOrDefault(id, 0L);
+            if ((now - last) >= (long)(GFORCE_WARN_INTERVAL_SEC * 1000.0)) {
+                lastGWarn.put(id, now);
+                String msg = GFORCE_WARN_ACTIONBAR.replace("{g}", String.format("%.1f", gForce));
+                sendActionBarMessage(p, Component.text(msg, NamedTextColor.YELLOW));
+                if (GFORCE_WARN_SOUND != null && !GFORCE_WARN_SOUND.isEmpty()) {
+                    p.playSound(p.getLocation(), GFORCE_WARN_SOUND, 1f, 1f);
+                }
+            }
+        }
+
         if (gForce < GFORCE_DAMAGE_START_G) return;
 
         double dmg = computeDamageFromTable(gForce);
@@ -768,6 +834,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         GFORCE_SAMPLE_SECONDS = getConfig().getDouble("gforce.sample_seconds", DEFAULT_GFORCE_SAMPLE_SECONDS);
         GFORCE_KILL_CREATIVE = getConfig().getBoolean("gforce.kill_in_creative", DEFAULT_GFORCE_KILL_CREATIVE);
         GFORCE_DAMAGE_START_G = getConfig().getDouble("gforce.damage_start_g", DEFAULT_GFORCE_DAMAGE_START_G);
+        GFORCE_WARN_ENABLED = getConfig().getBoolean("gforce.warn.enabled", DEFAULT_GFORCE_WARN_ENABLED);
+        GFORCE_WARN_THRESHOLD_G = getConfig().getDouble("gforce.warn.threshold_g", DEFAULT_GFORCE_WARN_THRESHOLD_G);
+        GFORCE_WARN_INTERVAL_SEC = getConfig().getDouble("gforce.warn.interval_sec", DEFAULT_GFORCE_WARN_INTERVAL_SEC);
+        GFORCE_WARN_SOUND = getConfig().getString("gforce.warn.sound", DEFAULT_GFORCE_WARN_SOUND);
+        GFORCE_WARN_ACTIONBAR = getConfig().getString("gforce.warn.actionbar", DEFAULT_GFORCE_WARN_ACTIONBAR);
 
         // g damage table
         gDamageTable.clear();
@@ -816,5 +887,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         LIFE_REPAIR_MATERIAL = mat;
         LIFE_MINUTES_PER_ITEM = getConfig().getInt("life.minutes_per_item", 1);
         LIFE_NOTIFY_COOLDOWN_SECS = getConfig().getDouble("life.notify_cooldown_seconds", 2.0);
+
+        // ui
+        UI_INFO_PERMISSION = getConfig().getString("ui.player_info_permission", "elytrahp.info");
+        UI_INFO_FORMAT = getConfig().getString("ui.info_format", "<hp>hp | v=<speed_kmh>km/h | fuel=<fuel>/<cap> | life=<life_remain>min | g=<g> | mode=<mode>");
     }
 }

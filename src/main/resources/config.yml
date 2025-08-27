@@ -29,6 +29,13 @@ gforce:
     - { g: 9.0, dmg: 21.0 }
     - { g: 9.5, dmg: 22.5 }
 
+  warn:
+    enabled: true
+    threshold_g: 2.8               # ここを超えたら警告（ダメージは別設定のまま）
+    interval_sec: 0.6              # 連続警告のスパム抑制
+    sound: "minecraft:block.note_block.snare"
+    actionbar: "警告: 加速度 {g} g"
+
 fuel:
   enabled: true
   capacity: 3000
@@ -41,6 +48,10 @@ fuel:
   # まとめてチャージ（スニーク右クリック）
   bulk_charge_on_sneak: true      # true でスニーク右クリック時にまとめて最大までチャージ
   max_sets_per_click: 9999        # 1クリックで消費できる燃料セットの上限（安全用）
+
+ui:
+  player_info_permission: "elytrahp.info"
+  info_format: "<hp>hp | v=<speed_kmh>km/h | fuel=<fuel>/<cap> | life=<life_remain>min | g=<g> | mode=<mode>"
 
 # --- Vanilla damping neutralizer (バニラ空中減衰の打ち消し) ---
 vanilla:
