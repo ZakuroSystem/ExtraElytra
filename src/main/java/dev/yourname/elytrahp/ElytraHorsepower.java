@@ -294,7 +294,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 }
 
                 // drag
-                double cdA = CDA_BASE_M2 * DRAG_MULTIPLIER * scale;
+                // Cross-sectional area grows with the square of the scale, otherwise
+                // large players (scale > 1) retain too much kinetic energy when diving.
+                double cdA = CDA_BASE_M2 * DRAG_MULTIPLIER * scale * scale;
                 double aDragBase = (0.5 * rho * cdA * speedMps * speedMps) / massKg;
                 double aDrag = aDragBase * dragZoneMul;
 
