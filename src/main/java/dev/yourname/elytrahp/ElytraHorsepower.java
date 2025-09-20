@@ -483,8 +483,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 p.sendMessage(Component.text("権限がありません", NamedTextColor.RED));
                 return true;
             }
-            if (args.length != 1) {
-                p.sendMessage(Component.text("/giveengine <hp>", NamedTextColor.YELLOW));
+            if (args.length != 3) {
+                p.sendMessage(Component.text("/giveengine <hp> <life_min> <fuel_capacity>", NamedTextColor.YELLOW));
                 return true;
             }
             double hp;
@@ -498,9 +498,32 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 p.sendMessage(Component.text("hp は正の値にしてください", NamedTextColor.RED));
                 return true;
             }
-            ItemStack engine = createEngineItem(hp);
+            int lifeMinutes;
+            try {
+                lifeMinutes = Integer.parseInt(args[1]);
+            } catch (NumberFormatException e) {
+                p.sendMessage(Component.text("寿命は整数で指定してください", NamedTextColor.RED));
+                return true;
+            }
+            if (lifeMinutes < 0) lifeMinutes = 0;
+
+            int fuelCapacity;
+            try {
+                fuelCapacity = Integer.parseInt(args[2]);
+            } catch (NumberFormatException e) {
+                p.sendMessage(Component.text("燃料容量は整数で指定してください", NamedTextColor.RED));
+                return true;
+            }
+            if (fuelCapacity <= 0) {
+                p.sendMessage(Component.text("燃料容量は正の値にしてください", NamedTextColor.RED));
+                return true;
+            }
+
+            ItemStack engine = createEngineItem(hp, lifeMinutes, fuelCapacity);
             p.getInventory().addItem(engine);
-            p.sendMessage(Component.text("エンジンを付与しました: " + new DecimalFormat("0.##").format(hp) + " hp", NamedTextColor.GREEN));
+            DecimalFormat df = new DecimalFormat("0.##");
+            p.sendMessage(Component.text("エンジンを付与しました: " + df.format(hp) + " hp / 寿命 " + (lifeMinutes > 0 ? lifeMinutes + "分" : "∞") +
+                    " / 燃料容量 " + fuelCapacity + "pt", NamedTextColor.GREEN));
             return true;
         }
         if (name.equals("elytrahp")) {
@@ -605,8 +628,12 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                         int repaired = getLifeRepaired(engine);
                         int usedTicks = getLifeUsedTicks(engine);
                         int usedMin = (int)Math.ceil((usedTicks / 20.0) / 60.0);
+                        if (total <= 0) {
+                            p.sendMessage(Component.text("寿命: ∞ / 使用: " + usedMin + "分 / 修理: " + repaired + "分 / 残り: ∞ / 修理可能残り: ∞ / 状態: 故障していない", NamedTextColor.YELLOW));
+                            return true;
+                        }
                         int remain = total + repaired - usedMin;
-                        int pool = total - repaired;
+                        int pool = Math.max(0, total - repaired);
                         String state = remain <= 0 ? "故障中" : "故障していない";
                         p.sendMessage(Component.text("寿命: " + total + "分 / 使用: " + usedMin + "分 / 修理: " + repaired + "分 / 残り: " + remain + "分 / 修理可能残り: " + pool + "分 / 状態: " + state, NamedTextColor.YELLOW));
                         return true;
@@ -614,8 +641,49 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     p.sendMessage(Component.text("Usage: /elytrahp life set <minutes> | /elytrahp life info", NamedTextColor.YELLOW));
                     return true;
                 }
+                if (args[0].equalsIgnoreCase("fuel")) {
+                    if (!(sender instanceof Player)) {
+                        sender.sendMessage(Component.text("Players only.", NamedTextColor.RED));
+                        return true;
+                    }
+                    Player p = (Player)sender;
+                    if (!p.hasPermission("elytrahp.admin")) {
+                        p.sendMessage(Component.text("権限がありません", NamedTextColor.RED));
+                        return true;
+                    }
+                    ItemStack engine = getEngineItem(p);
+                    if (engine == null) {
+                        p.sendMessage(Component.text("手に持っているアイテムがエンジンではありません", NamedTextColor.YELLOW));
+                        return true;
+                    }
+                    if (args.length >= 2 && args[1].equalsIgnoreCase("setcap")) {
+                        if (args.length != 3) {
+                            p.sendMessage(Component.text("/elytrahp fuel setcap <points>", NamedTextColor.YELLOW));
+                            return true;
+                        }
+                        int cap;
+                        try {
+                            cap = Integer.parseInt(args[2]);
+                        } catch (NumberFormatException ex) {
+                            p.sendMessage(Component.text("数値で指定してください", NamedTextColor.RED));
+                            return true;
+                        }
+                        if (cap <= 0) {
+                            p.sendMessage(Component.text("燃料容量は正の値にしてください", NamedTextColor.RED));
+                            return true;
+                        }
+                        setFuelCap(engine, cap);
+                        int current = getFuel(engine);
+                        int newCap = getFuelCap(engine);
+                        if (current > newCap) setFuel(engine, newCap);
+                        p.sendMessage(Component.text("燃料容量を " + newCap + " pt に設定しました", NamedTextColor.GREEN));
+                        return true;
+                    }
+                    p.sendMessage(Component.text("Usage: /elytrahp fuel setcap <points>", NamedTextColor.YELLOW));
+                    return true;
+                }
             }
-            sender.sendMessage(Component.text("Usage: /elytrahp reload", NamedTextColor.YELLOW));
+            sender.sendMessage(Component.text("Usage: /elytrahp reload | /elytrahp life ... | /elytrahp fuel ...", NamedTextColor.YELLOW));
             return true;
         }
         return false;
@@ -771,7 +839,21 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         ItemMeta meta = is.getItemMeta();
         if (meta == null) return FUEL_CAPACITY;
         Integer v = meta.getPersistentDataContainer().get(FUEL_CAP_KEY, PersistentDataType.INTEGER);
-        return v == null ? FUEL_CAPACITY : v;
+        if (v == null || v <= 0) return FUEL_CAPACITY;
+        return v;
+    }
+
+    private void setFuelCap(ItemStack is, int value) {
+        if (is == null) return;
+        ItemMeta meta = is.getItemMeta();
+        if (meta == null) return;
+        int cap = Math.max(1, value);
+        meta.getPersistentDataContainer().set(FUEL_CAP_KEY, PersistentDataType.INTEGER, cap);
+        is.setItemMeta(meta);
+        int current = getFuel(is);
+        if (current > cap) {
+            setFuel(is, cap);
+        }
     }
 
     // Life on item
@@ -1178,6 +1260,10 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     }
 
     private ItemStack createEngineItem(double hp) {
+        return createEngineItem(hp, 0, FUEL_CAPACITY);
+    }
+
+    private ItemStack createEngineItem(double hp, int lifeMinutes, int fuelCapacity) {
         ItemStack engine = new ItemStack(Material.BLAZE_ROD);
         ItemMeta meta = engine.getItemMeta();
         DecimalFormat df = new DecimalFormat("0.##");
@@ -1189,7 +1275,12 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         PersistentDataContainer pdc = meta.getPersistentDataContainer();
         pdc.set(HP_KEY, PersistentDataType.DOUBLE, hp);
         pdc.set(FUEL_KEY, PersistentDataType.INTEGER, 0);
-        pdc.set(FUEL_CAP_KEY, PersistentDataType.INTEGER, FUEL_CAPACITY);
+        int cap = fuelCapacity > 0 ? fuelCapacity : FUEL_CAPACITY;
+        pdc.set(FUEL_CAP_KEY, PersistentDataType.INTEGER, cap);
+        int life = Math.max(0, lifeMinutes);
+        pdc.set(LIFE_TOTAL_KEY, PersistentDataType.INTEGER, life);
+        pdc.set(LIFE_USED_KEY, PersistentDataType.INTEGER, 0);
+        pdc.set(LIFE_REPAIRED_KEY, PersistentDataType.INTEGER, 0);
         engine.setItemMeta(meta);
         return engine;
     }
