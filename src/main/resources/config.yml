@@ -61,14 +61,38 @@ thrust_altitude:
 boost:
   enabled: true
   trigger: "left_click_air"
-  duration_sec: 4.0
-  hp_multiplier: 1.20
-  fuel_multiplier: 1.30
-  activation_cost:
-    redstone: 1
   cancel_if_eco: true
   sound: "minecraft:item.totem.use"
   cooldown_sec: 0.0
+  # legacy defaults (items.* の省略時に参照)
+  duration_sec: 4.0
+  hp_multiplier: 1.20
+  fuel_multiplier: 1.30
+  life_multiplier: 1.0
+  activation_cost:
+    redstone: 1
+  items:
+    - id: "redstone"
+      material: "REDSTONE"
+      amount: 1
+      duration_sec: 4.0
+      hp_multiplier: 1.20
+      fuel_multiplier: 1.30
+      life_multiplier: 1.30
+    - id: "glow"
+      material: "GLOWSTONE_DUST"
+      amount: 2
+      duration_sec: 5.0
+      hp_multiplier: 1.25
+      fuel_multiplier: 1.40
+      life_multiplier: 1.45
+    - id: "blaze"
+      material: "BLAZE_POWDER"
+      amount: 1
+      duration_sec: 6.0
+      hp_multiplier: 1.35
+      fuel_multiplier: 1.50
+      life_multiplier: 1.60
 
 # eco mode
 eco:

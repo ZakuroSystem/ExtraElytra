@@ -5,6 +5,7 @@ Build: `mvn -q -DskipTests package`
 ## Features
 - Altitude-based thrust efficiency that weakens at high Y-levels
 - Boost and eco flight modes triggered by left and right click
+- Up to three boost consumables with per-item duration, thrust, fuel, and life multipliers
 - Zone-specific drag, fuel, and speed cap modifiers
 - G-force warnings and configurable damage threshold via `gforce.damage_start_g`
 - `/elytrahp info` command showing speed, fuel, life, and mode

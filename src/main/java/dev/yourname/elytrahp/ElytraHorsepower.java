@@ -96,6 +96,21 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private static class GStep { double g; double dmg; GStep(double g, double dmg){this.g=g; this.dmg=dmg;} }
     private List<GStep> gDamageTable = new ArrayList<>();
 
+    private static class BoostItem {
+        String id;
+        Material material;
+        int amount;
+        double durationSec;
+        double hpMultiplier;
+        double fuelMultiplier;
+        double lifeMultiplier;
+    }
+
+    private static class ActiveBoost {
+        long untilTick;
+        BoostItem item;
+    }
+
     private static class Zone {
         String id;
         double minX, minY, minZ, maxX, maxY, maxZ;
@@ -152,13 +167,10 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
     // boost config
     private boolean BOOST_ENABLED;
-    private double  BOOST_DURATION_SEC;
-    private double  BOOST_HP_MULT;
-    private double  BOOST_FUEL_MULT;
-    private int     BOOST_COST_REDSTONE;
     private boolean BOOST_CANCEL_IF_ECO;
     private String  BOOST_SOUND;
     private double  BOOST_COOLDOWN_SEC;
+    private final List<BoostItem> BOOST_ITEMS = new ArrayList<>();
 
     // eco config
     private boolean ECO_ENABLED;
@@ -181,8 +193,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private final Map<UUID, Long> lastGWarn = new HashMap<>();
     private final Map<UUID, Double> lastGValue = new HashMap<>();
     private final Map<UUID, Boolean> ecoEnabled = new HashMap<>();
-    private final Map<UUID, Long> boostUntilTick = new HashMap<>();
+    private final Map<UUID, ActiveBoost> activeBoosts = new HashMap<>();
     private final Map<UUID, Long> lastBoostUse = new HashMap<>();
+    private final Map<UUID, Double> lifeTickFraction = new HashMap<>();
     private static final long STATUS_INTERVAL_MS = 3000L;
     private long tickCounter = 0L;
 
@@ -249,6 +262,25 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 // engine
                 ItemStack engine = getEngineItem(p);
                 double hp = extractHorsepower(engine);
+
+                UUID id = p.getUniqueId();
+                ActiveBoost activeBoost = activeBoosts.get(id);
+                if (activeBoost != null && activeBoost.untilTick <= tickCounter) {
+                    activeBoosts.remove(id);
+                    activeBoost = null;
+                }
+                boolean ecoActive = ecoEnabled.getOrDefault(id, false);
+                double modeHpMul = 1.0;
+                double modeFuelMul = 1.0;
+                double modeLifeMul = 1.0;
+                if (activeBoost != null) {
+                    modeHpMul = activeBoost.item.hpMultiplier;
+                    modeFuelMul = activeBoost.item.fuelMultiplier;
+                    modeLifeMul = activeBoost.item.lifeMultiplier;
+                } else if (ecoActive) {
+                    modeHpMul = ECO_HP_MULT;
+                    modeFuelMul = ECO_FUEL_MULT;
+                }
 
                 // Show fuel/life status while gliding (every 3s, no warnings)
                 if (engine != null && (FUEL_ENABLED || LIFE_ENABLED)) {
@@ -319,12 +351,26 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                             thrustAllowed = false;
                             notifyLifeHint(p);
                         } else if (tickCounter % sampleTicks == 0) {
-                            usedTicks += sampleTicks;
-                            setLifeUsedTicks(engine, usedTicks);
+                            double incTicks = sampleTicks * modeLifeMul;
+                            double carry = lifeTickFraction.getOrDefault(id, 0.0);
+                            double totalInc = carry + incTicks;
+                            int addTicks = (int)Math.floor(totalInc + 1e-9);
+                            double newCarry = totalInc - addTicks;
+                            if (addTicks > 0) {
+                                usedTicks += addTicks;
+                                setLifeUsedTicks(engine, usedTicks);
+                            }
+                            if (newCarry > 1e-9) {
+                                lifeTickFraction.put(id, newCarry);
+                            } else {
+                                lifeTickFraction.remove(id);
+                            }
                             int remainAfter = total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0);
                             if (remainAfter <= 0) notifyLifeHint(p);
                         }
                     }
+                } else {
+                    lifeTickFraction.remove(id);
                 }
                 double powerW = (thrustAllowed ? hp * WATT_PER_HP : 0.0);
                 double aThrust = powerW / (massKg * speedMps);
@@ -339,17 +385,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     aThrust *= fAlt;
                 }
 
-                // mode multipliers
-                double modeHpMul = 1.0;
-                double modeFuelMul = 1.0;
-                UUID id = p.getUniqueId();
-                if (boostUntilTick.getOrDefault(id, 0L) > tickCounter) {
-                    modeHpMul = BOOST_HP_MULT;
-                    modeFuelMul = BOOST_FUEL_MULT;
-                } else if (ecoEnabled.getOrDefault(id, false)) {
-                    modeHpMul = ECO_HP_MULT;
-                    modeFuelMul = ECO_FUEL_MULT;
-                }
+                // mode multipliers already resolved above
                 double aThrustMode = aThrust * modeHpMul;
 
                 // speed cap ratio
@@ -477,8 +513,17 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     double gVal = lastGValue.getOrDefault(p.getUniqueId(), 0.0);
                     UUID id = p.getUniqueId();
                     String mode = "NORMAL";
-                    if (boostUntilTick.getOrDefault(id, 0L) > tickCounter) mode = "BOOST";
-                    else if (ecoEnabled.getOrDefault(id, false)) mode = "ECO";
+                    ActiveBoost active = activeBoosts.get(id);
+                    if (active != null && active.untilTick <= tickCounter) {
+                        activeBoosts.remove(id);
+                        active = null;
+                    }
+                    if (active != null) {
+                        String label = (active.item.id != null && !active.item.id.isEmpty()) ? "(" + active.item.id + ")" : "";
+                        mode = "BOOST" + label;
+                    } else if (ecoEnabled.getOrDefault(id, false)) {
+                        mode = "ECO";
+                    }
                     Zone z = findZone(p.getLocation());
                     String zoneId = (z != null ? z.id : "");
                     String out = UI_INFO_FORMAT
@@ -798,38 +843,122 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private void handleBoost(Player p, ItemStack engine) {
         long now = tickCounter;
         UUID id = p.getUniqueId();
-        long until = boostUntilTick.getOrDefault(id, 0L);
-        long last = lastBoostUse.getOrDefault(id, 0L);
-        long cooldownTicks = (long)Math.round(BOOST_COOLDOWN_SEC * 20.0);
-        if (now < until) {
+        ActiveBoost existing = activeBoosts.get(id);
+        if (existing != null && existing.untilTick <= now) {
+            activeBoosts.remove(id);
+            existing = null;
+        }
+        if (existing != null && existing.untilTick > now) {
             sendActionBarMessage(p, Component.text("BOOST継続中", NamedTextColor.YELLOW));
             return;
         }
+        long last = lastBoostUse.getOrDefault(id, 0L);
+        long cooldownTicks = (long)Math.round(BOOST_COOLDOWN_SEC * 20.0);
         if (now - last < cooldownTicks) {
             return;
         }
-        PlayerInventory inv = p.getInventory();
-        int need = BOOST_COST_REDSTONE;
-        if (countItem(inv, Material.REDSTONE) < need) {
-            sendActionBarMessage(p, Component.text("ブーストに必要: レッドストーン×" + need, NamedTextColor.YELLOW));
+        if (BOOST_ITEMS.isEmpty()) {
+            sendActionBarMessage(p, Component.text("ブースト設定が存在しません", NamedTextColor.RED));
             return;
         }
-        if (need > 0) removeItems(inv, Material.REDSTONE, need);
+        PlayerInventory inv = p.getInventory();
+        BoostItem chosen = selectBoostItem(p);
+        if (chosen == null) {
+            sendBoostRequirements(p);
+            return;
+        }
+        if (chosen.amount > 0) {
+            removeItems(inv, chosen.material, chosen.amount);
+        }
         if (ecoEnabled.getOrDefault(id, false) && BOOST_CANCEL_IF_ECO) {
             ecoEnabled.put(id, false);
         }
-        long durTicks = (long)Math.round(BOOST_DURATION_SEC * 20.0);
-        boostUntilTick.put(id, now + durTicks);
+        long durTicks = (long)Math.round(chosen.durationSec * 20.0);
+        if (durTicks <= 0) durTicks = 1;
+        ActiveBoost active = new ActiveBoost();
+        active.item = chosen;
+        active.untilTick = now + durTicks;
+        activeBoosts.put(id, active);
         lastBoostUse.put(id, now);
         if (BOOST_SOUND != null && !BOOST_SOUND.isEmpty()) p.playSound(p.getLocation(), BOOST_SOUND, 1f, 1f);
         StringBuilder msg = new StringBuilder();
-        msg.append("BOOST ");
-        msg.append(formatMultiplierDelta(BOOST_HP_MULT)).append(" 出力 (")
-           .append(formatNumber(BOOST_DURATION_SEC)).append("s)");
-        if (Math.abs(BOOST_FUEL_MULT - 1.0) > 1e-4) {
-            msg.append(" / 燃料").append(formatMultiplierDelta(BOOST_FUEL_MULT));
+        msg.append("BOOST");
+        if (chosen.id != null && !chosen.id.isEmpty()) {
+            msg.append("(").append(chosen.id).append(")");
+        }
+        msg.append(" ");
+        msg.append(formatMultiplierDelta(chosen.hpMultiplier)).append(" 出力 (")
+           .append(formatNumber(chosen.durationSec)).append("s)");
+        if (Math.abs(chosen.fuelMultiplier - 1.0) > 1e-4) {
+            msg.append(" / 燃料").append(formatMultiplierDelta(chosen.fuelMultiplier));
+        }
+        if (Math.abs(chosen.lifeMultiplier - 1.0) > 1e-4) {
+            msg.append(" / 寿命").append(formatMultiplierDelta(chosen.lifeMultiplier));
         }
         sendActionBarMessage(p, Component.text(msg.toString(), NamedTextColor.GOLD));
+    }
+
+    private BoostItem selectBoostItem(Player p) {
+        if (BOOST_ITEMS.isEmpty()) return null;
+        PlayerInventory inv = p.getInventory();
+        ItemStack off = inv.getItemInOffHand();
+        if (off != null && off.getType() != Material.AIR) {
+            BoostItem held = findBoostItem(off.getType());
+            if (held != null && (held.amount <= 0 || countItem(inv, held.material) >= held.amount)) {
+                return held;
+            }
+        }
+        for (BoostItem item : BOOST_ITEMS) {
+            if (item.amount <= 0 || countItem(inv, item.material) >= item.amount) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private BoostItem findBoostItem(Material material) {
+        if (material == null || material == Material.AIR) return null;
+        for (BoostItem item : BOOST_ITEMS) {
+            if (item.material == material) return item;
+        }
+        return null;
+    }
+
+    private void sendBoostRequirements(Player p) {
+        StringBuilder sb = new StringBuilder("ブーストに必要: ");
+        boolean first = true;
+        for (BoostItem item : BOOST_ITEMS) {
+            if (!first) sb.append(" / ");
+            first = false;
+            String label = (item.id != null && !item.id.isEmpty()) ? item.id : item.material.name();
+            sb.append(label).append("×");
+            sb.append(item.amount > 0 ? item.amount : 0);
+        }
+        sendActionBarMessage(p, Component.text(sb.toString(), NamedTextColor.YELLOW));
+    }
+
+    private int parseInt(Object value, int def) {
+        if (value instanceof Number) {
+            return ((Number)value).intValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Integer.parseInt((String)value);
+            } catch (NumberFormatException ignored) {}
+        }
+        return def;
+    }
+
+    private double parseDouble(Object value, double def) {
+        if (value instanceof Number) {
+            return ((Number)value).doubleValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Double.parseDouble((String)value);
+            } catch (NumberFormatException ignored) {}
+        }
+        return def;
     }
 
     private void handleEcoToggle(Player p) {
@@ -840,8 +969,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             if (ECO_SOUND_OFF != null && !ECO_SOUND_OFF.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_OFF, 1f, 1f);
             sendActionBarMessage(p, Component.text("ECO OFF", NamedTextColor.GREEN));
         } else {
-            if (boostUntilTick.getOrDefault(id, 0L) > tickCounter && ECO_CANCEL_IF_BOOST) {
-                boostUntilTick.put(id, 0L);
+            ActiveBoost active = activeBoosts.get(id);
+            if (active != null && active.untilTick > tickCounter && ECO_CANCEL_IF_BOOST) {
+                activeBoosts.remove(id);
             }
             ecoEnabled.put(id, true);
             if (ECO_SOUND_ON != null && !ECO_SOUND_ON.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_ON, 1f, 1f);
@@ -1113,13 +1243,54 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
         // boost
         BOOST_ENABLED = getConfig().getBoolean("boost.enabled", true);
-        BOOST_DURATION_SEC = getConfig().getDouble("boost.duration_sec", 4.0);
-        BOOST_HP_MULT = getConfig().getDouble("boost.hp_multiplier", 1.20);
-        BOOST_FUEL_MULT = getConfig().getDouble("boost.fuel_multiplier", 1.30);
-        BOOST_COST_REDSTONE = getConfig().getInt("boost.activation_cost.redstone", 1);
         BOOST_CANCEL_IF_ECO = getConfig().getBoolean("boost.cancel_if_eco", true);
         BOOST_SOUND = getConfig().getString("boost.sound", "minecraft:item.totem.use");
         BOOST_COOLDOWN_SEC = getConfig().getDouble("boost.cooldown_sec", 0.0);
+        BOOST_ITEMS.clear();
+        List<Map<?, ?>> rawBoostItems = getConfig().getMapList("boost.items");
+        if (!rawBoostItems.isEmpty()) {
+            int added = 0;
+            for (Map<?, ?> raw : rawBoostItems) {
+                if (raw == null) continue;
+                if (added >= 3) break;
+                String matName = Objects.toString(raw.get("material"), "");
+                if (matName.isEmpty()) {
+                    getLogger().warning("boost.items entry is missing material");
+                    continue;
+                }
+                Material mat = Material.matchMaterial(matName);
+                if (mat == null) {
+                    mat = Material.matchMaterial(matName.toUpperCase(Locale.ROOT));
+                }
+                if (mat == null) {
+                    getLogger().warning("Unknown boost material: " + matName);
+                    continue;
+                }
+                BoostItem item = new BoostItem();
+                item.id = Objects.toString(raw.get("id"), "");
+                item.material = mat;
+                item.amount = parseInt(raw.get("amount"), 1);
+                if (item.amount < 0) item.amount = 0;
+                item.durationSec = parseDouble(raw.get("duration_sec"), getConfig().getDouble("boost.duration_sec", 4.0));
+                item.hpMultiplier = parseDouble(raw.get("hp_multiplier"), getConfig().getDouble("boost.hp_multiplier", 1.20));
+                item.fuelMultiplier = parseDouble(raw.get("fuel_multiplier"), getConfig().getDouble("boost.fuel_multiplier", 1.30));
+                item.lifeMultiplier = parseDouble(raw.get("life_multiplier"), getConfig().getDouble("boost.life_multiplier", 1.0));
+                BOOST_ITEMS.add(item);
+                added++;
+            }
+        }
+        if (BOOST_ITEMS.isEmpty()) {
+            BoostItem legacy = new BoostItem();
+            legacy.id = "redstone";
+            legacy.material = Material.REDSTONE;
+            legacy.amount = Math.max(0, getConfig().getInt("boost.activation_cost.redstone", 1));
+            legacy.durationSec = getConfig().getDouble("boost.duration_sec", 4.0);
+            legacy.hpMultiplier = getConfig().getDouble("boost.hp_multiplier", 1.20);
+            legacy.fuelMultiplier = getConfig().getDouble("boost.fuel_multiplier", 1.30);
+            legacy.lifeMultiplier = getConfig().getDouble("boost.life_multiplier", 1.0);
+            BOOST_ITEMS.add(legacy);
+        }
+        activeBoosts.clear();
 
         // eco
         ECO_ENABLED = getConfig().getBoolean("eco.enabled", true);
