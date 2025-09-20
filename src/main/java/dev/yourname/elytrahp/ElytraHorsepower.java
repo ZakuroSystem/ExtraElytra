@@ -117,6 +117,15 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         BoostItem item;
     }
 
+    private enum FlightMode {
+        NORMAL,
+        ECO,
+        ENGINE_STOP
+    }
+
+    private static final double ENGINE_STOP_FUEL_RATIO = 0.10;
+    private static final double ENGINE_RAMP_SECONDS = 2.0;
+
     private static class Zone {
         String id;
         double minX, minY, minZ, maxX, maxY, maxZ;
@@ -198,10 +207,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private final Map<UUID, Long> lastStatus = new HashMap<>();
     private final Map<UUID, Long> lastGWarn = new HashMap<>();
     private final Map<UUID, Double> lastGValue = new HashMap<>();
-    private final Map<UUID, Boolean> ecoEnabled = new HashMap<>();
+    private final Map<UUID, FlightMode> flightModes = new HashMap<>();
     private final Map<UUID, ActiveBoost> activeBoosts = new HashMap<>();
     private final Map<UUID, Long> lastBoostUse = new HashMap<>();
     private final Map<UUID, Double> lifeTickFraction = new HashMap<>();
+    private final Map<UUID, Long> engineHoldStartTick = new HashMap<>();
     private static final long STATUS_INTERVAL_MS = 3000L;
     private long tickCounter = 0L;
 
@@ -238,6 +248,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             for (Player p : Bukkit.getOnlinePlayers()) {
                 if (!p.isGliding()) {
                     velHistoryMps.remove(p.getUniqueId());
+                    engineHoldStartTick.remove(p.getUniqueId());
                     continue;
                 }
 
@@ -268,15 +279,27 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
                 // engine
                 ItemStack engine = getEngineItem(p);
+                UUID id = p.getUniqueId();
+                double holdFactor = 0.0;
+                if (engine != null) {
+                    long startTick = engineHoldStartTick.computeIfAbsent(id, k -> tickCounter);
+                    double elapsed = (tickCounter - startTick) * DT;
+                    double factor = elapsed / ENGINE_RAMP_SECONDS;
+                    if (factor < 0.0) factor = 0.0;
+                    if (factor > 1.0) factor = 1.0;
+                    holdFactor = factor;
+                } else {
+                    engineHoldStartTick.remove(id);
+                    setFlightMode(id, FlightMode.NORMAL);
+                }
                 double hp = extractHorsepower(engine);
 
-                UUID id = p.getUniqueId();
                 ActiveBoost activeBoost = activeBoosts.get(id);
                 if (activeBoost != null && activeBoost.untilTick <= tickCounter) {
                     activeBoosts.remove(id);
                     activeBoost = null;
                 }
-                boolean ecoActive = ecoEnabled.getOrDefault(id, false);
+                FlightMode mode = getFlightMode(id);
                 double modeHpMul = 1.0;
                 double modeFuelMul = 1.0;
                 double modeLifeMul = 1.0;
@@ -284,9 +307,14 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     modeHpMul = activeBoost.item.hpMultiplier;
                     modeFuelMul = activeBoost.item.fuelMultiplier;
                     modeLifeMul = activeBoost.item.lifeMultiplier;
-                } else if (ecoActive) {
-                    modeHpMul = ECO_HP_MULT;
-                    modeFuelMul = ECO_FUEL_MULT;
+                } else {
+                    if (mode == FlightMode.ECO) {
+                        modeHpMul = ECO_HP_MULT;
+                        modeFuelMul = ECO_FUEL_MULT;
+                    } else if (mode == FlightMode.ENGINE_STOP) {
+                        modeHpMul = 0.0;
+                        modeFuelMul = ENGINE_STOP_FUEL_RATIO;
+                    }
                 }
 
                 // Show fuel/life status while gliding (every 3s, no warnings)
@@ -298,7 +326,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     if (now - lastWarnAt >= STATUS_INTERVAL_MS && now - lastStatusAt >= STATUS_INTERVAL_MS) {
                         StringBuilder sb = new StringBuilder();
                         if (FUEL_ENABLED) {
-                            int fuelCur = getFuel(engine);
+                            int fuelCur = displayFuel(engine);
                             int fuelCap = getFuelCap(engine);
                             sb.append("燃料: ").append(fuelCur).append("/").append(fuelCap);
                         }
@@ -340,10 +368,10 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 double aDrag = aDragBase * dragZoneMul;
 
                 // thrust gating
-                boolean thrustAllowed = (hp > 0.0) && !p.isSneaking();
+                boolean thrustAllowed = (hp > 0.0) && !p.isSneaking() && mode != FlightMode.ENGINE_STOP;
                 if (FUEL_ENABLED && thrustAllowed) {
-                    int fuel = getFuel(engine);
-                    if (fuel <= 0) {
+                    double fuel = getFuel(engine);
+                    if (fuel <= 1e-6) {
                         thrustAllowed = false;
                         notifyFuelHint(p);
                     }
@@ -358,7 +386,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                             thrustAllowed = false;
                             notifyLifeHint(p);
                         } else if (tickCounter % sampleTicks == 0) {
-                            double incTicks = sampleTicks * modeLifeMul;
+                            double incTicks = sampleTicks * modeLifeMul * holdFactor;
                             double carry = lifeTickFraction.getOrDefault(id, 0.0);
                             double totalInc = carry + incTicks;
                             int addTicks = (int)Math.floor(totalInc + 1e-9);
@@ -379,7 +407,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 } else {
                     lifeTickFraction.remove(id);
                 }
-                double powerW = (thrustAllowed ? hp * WATT_PER_HP : 0.0);
+                double powerW = (thrustAllowed ? hp * WATT_PER_HP * holdFactor : 0.0);
                 double aThrust = powerW / (massKg * speedMps);
                 double thrustAltFactor = 1.0;
 
@@ -431,17 +459,27 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 p.setVelocity(newVel);
 
                 // fuel consumption per 0.2s
-                if (FUEL_ENABLED && thrustAllowed && (tickCounter % sampleTicks == 0)) {
-                    double base = hp * FUEL_SAMPLE_COST_PER_HP;
-                    double altCost = base * thrustAltFactor;
-                    double modeCost = altCost * modeFuelMul;
-                    double zoneCost = modeCost * fuelZoneMul;
-                    int cost = (int)Math.ceil(zoneCost * r);
-                    if (cost > 0) {
-                        int before = getFuel(engine);
-                        int after = Math.max(0, before - cost);
-                        setFuel(engine, after);
-                        if (after == 0 && before > 0) notifyFuelHint(p);
+                if (FUEL_ENABLED && engine != null && (tickCounter % sampleTicks == 0)) {
+                    double throttleForFuel = holdFactor;
+                    if (!thrustAllowed) {
+                        if (mode == FlightMode.ENGINE_STOP) {
+                            throttleForFuel = 1.0;
+                        } else {
+                            throttleForFuel = 0.0;
+                        }
+                    }
+                    if (throttleForFuel > 1e-6) {
+                        double base = hp * FUEL_SAMPLE_COST_PER_HP;
+                        double altCost = base * thrustAltFactor;
+                        double modeCost = altCost * modeFuelMul;
+                        double zoneCost = modeCost * fuelZoneMul;
+                        double cost = zoneCost * r * throttleForFuel;
+                        if (cost > 1e-9) {
+                            double before = getFuel(engine);
+                            double after = Math.max(0.0, before - cost);
+                            setFuel(engine, after);
+                            if (after <= 1e-6 && before > 1e-6) notifyFuelHint(p);
+                        }
                     }
                 }
 
@@ -555,7 +593,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     }
                     double hp = extractHorsepower(engine);
                     double speedKmh = p.getVelocity().length() * 20.0 * 3.6;
-                    int fuel = getFuel(engine);
+                    int fuel = displayFuel(engine);
                     int cap = getFuelCap(engine);
                     int total = getLifeTotal(engine);
                     int repaired = getLifeRepaired(engine);
@@ -572,8 +610,13 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     if (active != null) {
                         String label = (active.item.id != null && !active.item.id.isEmpty()) ? "(" + active.item.id + ")" : "";
                         mode = "BOOST" + label;
-                    } else if (ecoEnabled.getOrDefault(id, false)) {
-                        mode = "ECO";
+                    } else {
+                        FlightMode state = getFlightMode(id);
+                        if (state == FlightMode.ECO) {
+                            mode = "ECO";
+                        } else if (state == FlightMode.ENGINE_STOP) {
+                            mode = "STOP";
+                        }
                     }
                     Zone z = findZone(p.getLocation());
                     String zoneId = (z != null ? z.id : "");
@@ -673,7 +716,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                             return true;
                         }
                         setFuelCap(engine, cap);
-                        int current = getFuel(engine);
+                        double current = getFuel(engine);
                         int newCap = getFuelCap(engine);
                         if (current > newCap) setFuel(engine, newCap);
                         p.sendMessage(Component.text("燃料容量を " + newCap + " pt に設定しました", NamedTextColor.GREEN));
@@ -750,19 +793,20 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             int setsByCoal = coalNeed > 0 ? (haveCoal / coalNeed) : Integer.MAX_VALUE;
             int setsByGun  = gunNeed > 0 ? (haveGun / gunNeed) : Integer.MAX_VALUE;
             int cap = getFuelCap(engine);
-            int cur = getFuel(engine);
-            int roomPts = Math.max(0, cap - cur);
-            int setsByCap = ptsPerSet > 0 ? (roomPts / ptsPerSet) : 0;
+            double cur = getFuel(engine);
+            double roomPts = Math.max(0.0, cap - cur);
+            int setsByCap = ptsPerSet > 0 ? (int)Math.floor(roomPts / ptsPerSet) : 0;
 
             int sets = Math.min(Math.min(setsByCoal, setsByGun), setsByCap);
             sets = Math.min(sets, Math.max(1, FUEL_MAX_SETS_PER_CLICK));
 
             if (sets <= 0) {
+                int displayCur = (int)Math.floor(cur + 1e-6);
                 if (setsByCap <= 0) {
-                    if (roomPts <= 0) {
-                        sendActionBarMessage(p, Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+                    if (roomPts <= 1e-6) {
+                        sendActionBarMessage(p, Component.text("燃料はすでに満タンです (" + displayCur + "/" + cap + ")", NamedTextColor.YELLOW));
                     } else {
-                        sendActionBarMessage(p, Component.text("燃料の残容量が不足しています (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+                        sendActionBarMessage(p, Component.text("燃料の残容量が不足しています (" + displayCur + "/" + cap + ")", NamedTextColor.YELLOW));
                     }
                 } else {
                     sendActionBarMessage(p, Component.text("チャージに必要: 石炭×" + coalNeed + " + 火薬×" + gunNeed, NamedTextColor.YELLOW));
@@ -772,31 +816,34 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             if (coalNeed > 0) removeItems(inv, Material.COAL, coalNeed * sets);
             if (gunNeed  > 0) removeItems(inv, Material.GUNPOWDER, gunNeed * sets);
             int addPts = ptsPerSet * sets;
-            int newVal = Math.min(cap, cur + addPts);
+            double newVal = Math.min(cap, cur + addPts);
             setFuel(engine, newVal);
-            sendActionBarMessage(p, Component.text("まとめてチャージ +" + addPts + "pt (" + sets + "セット消費)  燃料: " + newVal + "/" + cap, NamedTextColor.GOLD));
+            int displayNew = (int)Math.floor(newVal + 1e-6);
+            sendActionBarMessage(p, Component.text("まとめてチャージ +" + addPts + "pt (" + sets + "セット消費)  燃料: " + displayNew + "/" + cap, NamedTextColor.GOLD));
             return;
         }
 
         // 通常（非スニーク）: 1 セットだけチャージ
         int cap = getFuelCap(engine);
-        int cur = getFuel(engine);
-        int room = cap - cur;
-        if (room <= 0) {
-            sendActionBarMessage(p, Component.text("燃料はすでに満タンです (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+        double cur = getFuel(engine);
+        double room = cap - cur;
+        int displayCur = (int)Math.floor(cur + 1e-6);
+        if (room <= 1e-6) {
+            sendActionBarMessage(p, Component.text("燃料はすでに満タンです (" + displayCur + "/" + cap + ")", NamedTextColor.YELLOW));
             return;
         }
-        if (room < ptsPerSet) {
-            sendActionBarMessage(p, Component.text("燃料の残容量が不足しています (" + cur + "/" + cap + ")", NamedTextColor.YELLOW));
+        if (room + 1e-6 < ptsPerSet) {
+            sendActionBarMessage(p, Component.text("燃料の残容量が不足しています (" + displayCur + "/" + cap + ")", NamedTextColor.YELLOW));
             return;
         }
         if (countItem(inv, Material.COAL) >= coalNeed && countItem(inv, Material.GUNPOWDER) >= gunNeed) {
             removeItems(inv, Material.COAL, coalNeed);
             removeItems(inv, Material.GUNPOWDER, gunNeed);
             int add = ptsPerSet;
-            int newVal = Math.min(cap, cur + add);
+            double newVal = Math.min(cap, cur + add);
             setFuel(engine, newVal);
-            sendActionBarMessage(p, Component.text("チャージ +" + add + "pt  (燃料: " + newVal + "/" + cap + ")", NamedTextColor.GOLD));
+            int displayNew = (int)Math.floor(newVal + 1e-6);
+            sendActionBarMessage(p, Component.text("チャージ +" + add + "pt  (燃料: " + displayNew + "/" + cap + ")", NamedTextColor.GOLD));
         } else {
             sendActionBarMessage(p, Component.text("チャージに必要: 石炭×" + coalNeed + " + 火薬×" + gunNeed, NamedTextColor.YELLOW));
         }
@@ -820,19 +867,28 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     }
 
     // Fuel on item
-    private int getFuel(ItemStack is) {
-        if (is == null) return 0;
+    private double getFuel(ItemStack is) {
+        if (is == null) return 0.0;
         ItemMeta meta = is.getItemMeta();
-        if (meta == null) return 0;
-        Integer v = meta.getPersistentDataContainer().get(FUEL_KEY, PersistentDataType.INTEGER);
-        return v == null ? 0 : Math.max(0, v);
+        if (meta == null) return 0.0;
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Double v = pdc.get(FUEL_KEY, PersistentDataType.DOUBLE);
+        if (v != null) return Math.max(0.0, v);
+        Integer legacy = pdc.get(FUEL_KEY, PersistentDataType.INTEGER);
+        if (legacy != null) return Math.max(0.0, legacy.doubleValue());
+        return 0.0;
     }
-    private void setFuel(ItemStack is, int value) {
+    private void setFuel(ItemStack is, double value) {
         if (is == null) return;
         ItemMeta meta = is.getItemMeta();
         if (meta == null) return;
-        meta.getPersistentDataContainer().set(FUEL_KEY, PersistentDataType.INTEGER, Math.max(0, value));
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        pdc.remove(FUEL_KEY);
+        pdc.set(FUEL_KEY, PersistentDataType.DOUBLE, Math.max(0.0, value));
         is.setItemMeta(meta);
+    }
+    private int displayFuel(ItemStack is) {
+        return (int)Math.floor(getFuel(is) + 1e-6);
     }
     private int getFuelCap(ItemStack is) {
         if (is == null) return FUEL_CAPACITY;
@@ -850,7 +906,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         int cap = Math.max(1, value);
         meta.getPersistentDataContainer().set(FUEL_CAP_KEY, PersistentDataType.INTEGER, cap);
         is.setItemMeta(meta);
-        int current = getFuel(is);
+        double current = getFuel(is);
         if (current > cap) {
             setFuel(is, cap);
         }
@@ -980,8 +1036,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         if (chosen.amount > 0) {
             removeItems(inv, chosen.material, chosen.amount);
         }
-        if (ecoEnabled.getOrDefault(id, false) && BOOST_CANCEL_IF_ECO) {
-            ecoEnabled.put(id, false);
+        if (BOOST_CANCEL_IF_ECO) {
+            FlightMode mode = getFlightMode(id);
+            if (mode != FlightMode.NORMAL) {
+                setFlightMode(id, FlightMode.NORMAL);
+            }
         }
         long durTicks = (long)Math.round(chosen.durationSec * 20.0);
         if (durTicks <= 0) durTicks = 1;
@@ -1073,21 +1132,57 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
     private void handleEcoToggle(Player p) {
         UUID id = p.getUniqueId();
-        boolean on = ecoEnabled.getOrDefault(id, false);
-        if (on) {
-            ecoEnabled.put(id, false);
-            if (ECO_SOUND_OFF != null && !ECO_SOUND_OFF.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_OFF, 1f, 1f);
-            sendActionBarMessage(p, Component.text("ECO OFF", NamedTextColor.GREEN));
-        } else {
+        FlightMode current = getFlightMode(id);
+        FlightMode next;
+        switch (current) {
+            case ECO -> next = FlightMode.ENGINE_STOP;
+            case ENGINE_STOP -> next = FlightMode.NORMAL;
+            default -> next = FlightMode.ECO;
+        }
+
+        if (next == FlightMode.ECO && ECO_CANCEL_IF_BOOST) {
             ActiveBoost active = activeBoosts.get(id);
-            if (active != null && active.untilTick > tickCounter && ECO_CANCEL_IF_BOOST) {
+            if (active != null && active.untilTick > tickCounter) {
                 activeBoosts.remove(id);
             }
-            ecoEnabled.put(id, true);
-            if (ECO_SOUND_ON != null && !ECO_SOUND_ON.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_ON, 1f, 1f);
-            String msg = "ECO ON: 推力" + formatMultiplierAbsolute(ECO_HP_MULT) +
-                         " / 燃料" + formatMultiplierAbsolute(ECO_FUEL_MULT);
-            sendActionBarMessage(p, Component.text(msg, NamedTextColor.GOLD));
+        }
+
+        if (next == FlightMode.ENGINE_STOP && ECO_CANCEL_IF_BOOST) {
+            ActiveBoost active = activeBoosts.get(id);
+            if (active != null && active.untilTick > tickCounter) {
+                activeBoosts.remove(id);
+            }
+        }
+
+        setFlightMode(id, next);
+
+        switch (next) {
+            case ECO -> {
+                if (ECO_SOUND_ON != null && !ECO_SOUND_ON.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_ON, 1f, 1f);
+                String msg = "ECO ON: 推力" + formatMultiplierAbsolute(ECO_HP_MULT) +
+                             " / 燃料" + formatMultiplierAbsolute(ECO_FUEL_MULT);
+                sendActionBarMessage(p, Component.text(msg, NamedTextColor.GOLD));
+            }
+            case ENGINE_STOP -> {
+                if (ECO_SOUND_OFF != null && !ECO_SOUND_OFF.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_OFF, 1f, 1f);
+                sendActionBarMessage(p, Component.text("ENGINE STOP: 推力0% / 燃料10%", NamedTextColor.YELLOW));
+            }
+            case NORMAL -> {
+                if (ECO_SOUND_OFF != null && !ECO_SOUND_OFF.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_OFF, 1f, 1f);
+                sendActionBarMessage(p, Component.text("ECO OFF", NamedTextColor.GREEN));
+            }
+        }
+    }
+
+    private FlightMode getFlightMode(UUID id) {
+        return flightModes.getOrDefault(id, FlightMode.NORMAL);
+    }
+
+    private void setFlightMode(UUID id, FlightMode mode) {
+        if (mode == FlightMode.NORMAL) {
+            flightModes.remove(id);
+        } else {
+            flightModes.put(id, mode);
         }
     }
 
@@ -1274,7 +1369,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         meta.lore(lore);
         PersistentDataContainer pdc = meta.getPersistentDataContainer();
         pdc.set(HP_KEY, PersistentDataType.DOUBLE, hp);
-        pdc.set(FUEL_KEY, PersistentDataType.INTEGER, 0);
+        pdc.set(FUEL_KEY, PersistentDataType.DOUBLE, 0.0);
         int cap = fuelCapacity > 0 ? fuelCapacity : FUEL_CAPACITY;
         pdc.set(FUEL_CAP_KEY, PersistentDataType.INTEGER, cap);
         int life = Math.max(0, lifeMinutes);
@@ -1410,6 +1505,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             BOOST_ITEMS.add(legacy);
         }
         activeBoosts.clear();
+        flightModes.clear();
+        engineHoldStartTick.clear();
 
         // eco
         ECO_ENABLED = getConfig().getBoolean("eco.enabled", true);
