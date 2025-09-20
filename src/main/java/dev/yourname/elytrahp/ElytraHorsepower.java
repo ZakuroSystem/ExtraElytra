@@ -352,7 +352,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 // Show fuel/life status while gliding (every 3s, no warnings)
                 if (engine != null && (FUEL_ENABLED || LIFE_ENABLED)) {
                     long now = System.currentTimeMillis();
-                    UUID id = p.getUniqueId();
                     long lastWarnAt = lastWarn.getOrDefault(id, 0L);
                     long lastStatusAt = lastStatus.getOrDefault(id, 0L);
                     if (now - lastWarnAt >= STATUS_INTERVAL_MS && now - lastStatusAt >= STATUS_INTERVAL_MS) {
@@ -656,8 +655,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                         active = null;
                     }
                     if (active != null) {
-                        String label = (active.item.id != null && !active.item.id.isEmpty()) ? "(" + active.item.id + ")" : "";
-                        mode = "BOOST" + label;
+                        String boostLabel = (active.item.id != null && !active.item.id.isEmpty()) ? "(" + active.item.id + ")" : "";
+                        mode = "BOOST" + boostLabel;
                     } else {
                         FlightMode state = getFlightMode(id);
                         if (state == FlightMode.ECO) {
@@ -1510,10 +1509,10 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         LIFE_PREFER_REPAIR_WHEN_BROKEN = getConfig().getBoolean("life.prefer_repair_when_broken", true);
         LIFE_BULK_REPAIR_ON_SNEAK = getConfig().getBoolean("life.bulk_repair_on_sneak", true);
         LIFE_MAX_SETS_PER_CLICK = getConfig().getInt("life.max_sets_per_click", 9999);
-        String matName = getConfig().getString("life.repair_material", "LAPIS_BLOCK");
-        Material mat = Material.matchMaterial(matName);
-        if (mat == null) mat = Material.LAPIS_BLOCK;
-        LIFE_REPAIR_MATERIAL = mat;
+        String lifeMatName = getConfig().getString("life.repair_material", "LAPIS_BLOCK");
+        Material lifeMat = Material.matchMaterial(lifeMatName);
+        if (lifeMat == null) lifeMat = Material.LAPIS_BLOCK;
+        LIFE_REPAIR_MATERIAL = lifeMat;
         LIFE_MINUTES_PER_ITEM = getConfig().getInt("life.minutes_per_item", 1);
         LIFE_NOTIFY_COOLDOWN_SECS = getConfig().getDouble("life.notify_cooldown_seconds", 2.0);
 
@@ -1536,22 +1535,22 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             for (Map<?, ?> raw : rawBoostItems) {
                 if (raw == null) continue;
                 if (added >= 3) break;
-                String matName = Objects.toString(raw.get("material"), "");
-                if (matName.isEmpty()) {
+                String boostMatName = Objects.toString(raw.get("material"), "");
+                if (boostMatName.isEmpty()) {
                     getLogger().warning("boost.items entry is missing material");
                     continue;
                 }
-                Material mat = Material.matchMaterial(matName);
-                if (mat == null) {
-                    mat = Material.matchMaterial(matName.toUpperCase(Locale.ROOT));
+                Material boostMat = Material.matchMaterial(boostMatName);
+                if (boostMat == null) {
+                    boostMat = Material.matchMaterial(boostMatName.toUpperCase(Locale.ROOT));
                 }
-                if (mat == null) {
-                    getLogger().warning("Unknown boost material: " + matName);
+                if (boostMat == null) {
+                    getLogger().warning("Unknown boost material: " + boostMatName);
                     continue;
                 }
                 BoostItem item = new BoostItem();
                 item.id = Objects.toString(raw.get("id"), "");
-                item.material = mat;
+                item.material = boostMat;
                 item.amount = parseInt(raw.get("amount"), 1);
                 if (item.amount < 0) item.amount = 0;
                 item.durationSec = parseDouble(raw.get("duration_sec"), getConfig().getDouble("boost.duration_sec", 4.0));
