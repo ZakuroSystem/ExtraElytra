@@ -253,12 +253,12 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             final int sampleTicks = Math.max(1, (int)Math.round(GFORCE_SAMPLE_SECONDS / DT)); // normally 4
 
             for (Player p : Bukkit.getOnlinePlayers()) {
-                UUID id = p.getUniqueId();
+                UUID playerId = p.getUniqueId();
                 if (!p.isGliding()) {
-                    velHistoryMps.remove(id);
-                    engineHoldStartTick.remove(id);
-                    lastTickLocation.remove(id);
-                    effectiveVelocityBt.remove(id);
+                    velHistoryMps.remove(playerId);
+                    engineHoldStartTick.remove(playerId);
+                    lastTickLocation.remove(playerId);
+                    effectiveVelocityBt.remove(playerId);
                     continue;
                 }
 
@@ -270,7 +270,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
                 // current velocity (use displacement between ticks if available)
                 Vector velBt = p.getVelocity();
-                Location prevLocation = lastTickLocation.put(id, currentLocation.clone());
+                Location prevLocation = lastTickLocation.put(playerId, currentLocation.clone());
                 if (prevLocation != null && prevLocation.getWorld() == currentLocation.getWorld()) {
                     Vector displacement = currentLocation.toVector().subtract(prevLocation.toVector());
                     velBt = displacement;
@@ -285,7 +285,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     }
                 }
 
-                Vector storedEffective = effectiveVelocityBt.get(id);
+                Vector storedEffective = effectiveVelocityBt.get(playerId);
                 Vector physicsVelBt = velBt.clone();
                 if (storedEffective != null) {
                     double actualLen = velBt.length();
@@ -314,24 +314,24 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 ItemStack engine = getEngineItem(p);
                 double holdFactor = 0.0;
                 if (engine != null) {
-                    long startTick = engineHoldStartTick.computeIfAbsent(id, k -> tickCounter);
+                    long startTick = engineHoldStartTick.computeIfAbsent(playerId, k -> tickCounter);
                     double elapsed = (tickCounter - startTick) * DT;
                     double factor = elapsed / ENGINE_RAMP_SECONDS;
                     if (factor < 0.0) factor = 0.0;
                     if (factor > 1.0) factor = 1.0;
                     holdFactor = factor;
                 } else {
-                    engineHoldStartTick.remove(id);
-                    setFlightMode(id, FlightMode.NORMAL);
+                    engineHoldStartTick.remove(playerId);
+                    setFlightMode(playerId, FlightMode.NORMAL);
                 }
                 double hp = extractHorsepower(engine);
 
-                ActiveBoost activeBoost = activeBoosts.get(id);
+                ActiveBoost activeBoost = activeBoosts.get(playerId);
                 if (activeBoost != null && activeBoost.untilTick <= tickCounter) {
-                    activeBoosts.remove(id);
+                    activeBoosts.remove(playerId);
                     activeBoost = null;
                 }
-                FlightMode mode = getFlightMode(id);
+                FlightMode mode = getFlightMode(playerId);
                 double modeHpMul = 1.0;
                 double modeFuelMul = 1.0;
                 double modeLifeMul = 1.0;
@@ -352,8 +352,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 // Show fuel/life status while gliding (every 3s, no warnings)
                 if (engine != null && (FUEL_ENABLED || LIFE_ENABLED)) {
                     long now = System.currentTimeMillis();
-                    long lastWarnAt = lastWarn.getOrDefault(id, 0L);
-                    long lastStatusAt = lastStatus.getOrDefault(id, 0L);
+                    long lastWarnAt = lastWarn.getOrDefault(playerId, 0L);
+                    long lastStatusAt = lastStatus.getOrDefault(playerId, 0L);
                     if (now - lastWarnAt >= STATUS_INTERVAL_MS && now - lastStatusAt >= STATUS_INTERVAL_MS) {
                         StringBuilder sb = new StringBuilder();
                         if (FUEL_ENABLED) {
@@ -375,7 +375,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                         }
                         if (sb.length() > 0) {
                             p.sendActionBar(Component.text(sb.toString(), NamedTextColor.AQUA));
-                            lastStatus.put(id, now);
+                            lastStatus.put(playerId, now);
                         }
                     }
                 }
@@ -418,7 +418,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                             notifyLifeHint(p);
                         } else if (tickCounter % sampleTicks == 0) {
                             double incTicks = sampleTicks * modeLifeMul * holdFactor;
-                            double carry = lifeTickFraction.getOrDefault(id, 0.0);
+                            double carry = lifeTickFraction.getOrDefault(playerId, 0.0);
                             double totalInc = carry + incTicks;
                             int addTicks = (int)Math.floor(totalInc + 1e-9);
                             double newCarry = totalInc - addTicks;
@@ -427,16 +427,16 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                                 setLifeUsedTicks(engine, usedTicks);
                             }
                             if (newCarry > 1e-9) {
-                                lifeTickFraction.put(id, newCarry);
+                                lifeTickFraction.put(playerId, newCarry);
                             } else {
-                                lifeTickFraction.remove(id);
+                                lifeTickFraction.remove(playerId);
                             }
                             int remainAfter = total + repaired - (int)Math.ceil((usedTicks / 20.0) / 60.0);
                             if (remainAfter <= 0) notifyLifeHint(p);
                         }
                     }
                 } else {
-                    lifeTickFraction.remove(id);
+                    lifeTickFraction.remove(playerId);
                 }
                 double powerW = (thrustAllowed ? hp * WATT_PER_HP * holdFactor : 0.0);
                 double aThrust = powerW / (massKg * speedMps);
@@ -501,7 +501,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     p.teleport(loc, PlayerTeleportEvent.TeleportCause.PLUGIN);
                 }
 
-                effectiveVelocityBt.put(id, desiredDir.clone().multiply(desiredSpeedBt));
+                effectiveVelocityBt.put(playerId, desiredDir.clone().multiply(desiredSpeedBt));
 
                 // fuel consumption per 0.2s
                 if (FUEL_ENABLED && engine != null && (tickCounter % sampleTicks == 0)) {
@@ -555,7 +555,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
     // Commands
     @Override
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    public boolean onCommand(CommandSender sender, Command command, String commandLabel, String[] args) {
         String name = command.getName().toLowerCase(Locale.ROOT);
         if (name.equals("giveengine")) {
             if (!(sender instanceof Player)) {
