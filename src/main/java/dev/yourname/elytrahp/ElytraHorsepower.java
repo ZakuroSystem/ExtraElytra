@@ -285,7 +285,23 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     }
                 }
 
-                double speedBt = velBt.length();
+                Vector storedEffective = effectiveVelocityBt.get(id);
+                Vector physicsVelBt = velBt.clone();
+                if (storedEffective != null) {
+                    double actualLen = velBt.length();
+                    double storedLen = storedEffective.length();
+                    if (storedLen > 1e-6) {
+                        if (actualLen > storedLen * 0.5) {
+                            physicsVelBt = storedEffective.clone();
+                        } else {
+                            physicsVelBt = velBt.clone();
+                        }
+                    } else {
+                        physicsVelBt = velBt.clone();
+                    }
+                }
+
+                double speedBt = physicsVelBt.length();
                 double speedMps = speedBt * 20.0;
                 if (speedMps < MIN_SPEED_MPS) speedMps = MIN_SPEED_MPS;
 
@@ -458,7 +474,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 // update velocity
                 Vector dirFacing = currentLocation.getDirection();
                 if (dirFacing.lengthSquared() > 1e-6) dirFacing.normalize();
-                Vector dirVel = speedBt > 1e-6 ? velBt.clone().normalize() : dirFacing.clone();
+                Vector dirVel = speedBt > 1e-6 ? physicsVelBt.clone().normalize() : dirFacing.clone();
 
                 double dvThrust_bt = (aThrustEff * DT) / 20.0;
                 double dvDrag_bt   = (aDrag   * DT) / 20.0;
@@ -466,7 +482,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 double maxDv_bt = (MAX_ACCEL_MPS2 * DT) / 20.0;
                 if (dvThrust_bt > maxDv_bt) dvThrust_bt = maxDv_bt;
 
-                Vector newVel = velBt.clone();
+                Vector newVel = physicsVelBt.clone();
                 if (dvThrust_bt > 0 && dirFacing.lengthSquared() > 0) newVel.add(dirFacing.multiply(dvThrust_bt));
                 if (dvDrag_bt   > 0 && dirVel.lengthSquared() > 0) {
                     double dragMag = Math.min(dvDrag_bt, newVel.length());
