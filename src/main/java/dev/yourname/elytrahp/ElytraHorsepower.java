@@ -289,6 +289,26 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     velBt = displacement;
                 }
 
+                ItemStack engine = getEngineItem(p);
+                ActiveBoost activeBoost = activeBoosts.get(playerId);
+                if (activeBoost != null && activeBoost.untilTick <= tickCounter) {
+                    activeBoosts.remove(playerId);
+                    activeBoost = null;
+                }
+
+                if (engine == null) {
+                    engineHoldStartTick.remove(playerId);
+                    setFlightMode(playerId, FlightMode.NORMAL);
+                    effectiveVelocityBt.remove(playerId);
+                    lifeTickFraction.remove(playerId);
+                    if (activeBoost != null) {
+                        activeBoosts.remove(playerId);
+                    }
+                    Vector effectiveVelocityForG = velBt.clone();
+                    updateGForceDamage(p, effectiveVelocityForG, sampleTicks);
+                    continue;
+                }
+
                 // --- Neutralize vanilla air/elytra damping (相殺) ---
                 if (NEUTRALIZE_VANILLA_DRAG) {
                     double f = p.isGliding() ? VANILLA_ELYTRA_DAMP : VANILLA_AIR_DAMP;
@@ -323,8 +343,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 double h = y - SEA_LEVEL_Y;
                 double rho = airDensityAtAltitude(h);
 
-                // engine
-                ItemStack engine = getEngineItem(p);
                 double holdFactor = 0.0;
                 if (engine != null) {
                     long startTick = engineHoldStartTick.computeIfAbsent(playerId, k -> tickCounter);
@@ -339,11 +357,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 }
                 double hp = extractHorsepower(engine);
 
-                ActiveBoost activeBoost = activeBoosts.get(playerId);
-                if (activeBoost != null && activeBoost.untilTick <= tickCounter) {
-                    activeBoosts.remove(playerId);
-                    activeBoost = null;
-                }
                 FlightMode mode = getFlightMode(playerId);
                 double modeHpMul = 1.0;
                 double modeFuelMul = 1.0;
