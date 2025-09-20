@@ -23,6 +23,7 @@ import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Vector;
+import org.bukkit.event.player.PlayerTeleportEvent;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -296,6 +297,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     if (activeBoost != null) {
                         activeBoosts.remove(playerId);
                     }
+                    if (p.isGliding()) {
+                        p.setGliding(false);
+                    }
                     Vector effectiveVelocityForG = velBt.clone();
                     updateGForceDamage(p, effectiveVelocityForG, sampleTicks);
                     continue;
@@ -506,16 +510,26 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     if (dragMag > 0) newVel.subtract(dirVel.multiply(dragMag));
                 }
 
-                Vector appliedVelocity = newVel;
-                double appliedSpeedBt = appliedVelocity.length();
-                if (appliedSpeedBt > VANILLA_SPEED_CAP_BT && appliedSpeedBt > 1e-6) {
-                    appliedVelocity = appliedVelocity.clone().normalize().multiply(VANILLA_SPEED_CAP_BT);
-                    appliedSpeedBt = VANILLA_SPEED_CAP_BT;
+                Vector desiredVelocity = newVel;
+                Vector appliedVelocity = desiredVelocity;
+                Vector teleportDelta = new Vector();
+                double desiredSpeedBt = desiredVelocity.length();
+                if (desiredSpeedBt > VANILLA_SPEED_CAP_BT && desiredSpeedBt > 1e-6) {
+                    Vector direction = desiredVelocity.clone().normalize();
+                    appliedVelocity = direction.clone().multiply(VANILLA_SPEED_CAP_BT);
+                    double residual = desiredSpeedBt - VANILLA_SPEED_CAP_BT;
+                    teleportDelta = direction.clone().multiply(residual);
                 }
 
                 p.setVelocity(appliedVelocity);
 
-                effectiveVelocityBt.put(playerId, appliedVelocity.clone());
+                if (teleportDelta.lengthSquared() > 1e-6) {
+                    Location teleportTarget = currentLocation.clone().add(teleportDelta);
+                    p.teleport(teleportTarget, PlayerTeleportEvent.TeleportCause.PLUGIN);
+                    lastTickLocation.put(playerId, teleportTarget.clone());
+                }
+
+                effectiveVelocityBt.put(playerId, desiredVelocity.clone());
 
                 // fuel consumption per 0.2s
                 if (FUEL_ENABLED && engine != null && (tickCounter % sampleTicks == 0)) {
@@ -543,7 +557,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 }
 
                 // g-force damage per 0.2s
-                Vector effectiveVelocityForG = appliedVelocity.clone();
+                Vector effectiveVelocityForG = desiredVelocity.clone();
                 updateGForceDamage(p, effectiveVelocityForG, sampleTicks);
             }
         }, 1L, 1L);
