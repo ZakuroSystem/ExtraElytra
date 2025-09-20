@@ -381,6 +381,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 }
                 double powerW = (thrustAllowed ? hp * WATT_PER_HP : 0.0);
                 double aThrust = powerW / (massKg * speedMps);
+                double thrustAltFactor = 1.0;
 
                 // altitude factor
                 if (THRUST_ALT_ENABLED) {
@@ -389,7 +390,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     double fAlt = Math.pow(rhoRel, THRUST_ALPHA);
                     if (fAlt < THRUST_MIN_FACTOR) fAlt = THRUST_MIN_FACTOR;
                     if (fAlt > THRUST_MAX_FACTOR) fAlt = THRUST_MAX_FACTOR;
-                    aThrust *= fAlt;
+                    thrustAltFactor = fAlt;
+                    aThrust *= thrustAltFactor;
                 }
 
                 // mode multipliers already resolved above
@@ -431,7 +433,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 // fuel consumption per 0.2s
                 if (FUEL_ENABLED && thrustAllowed && (tickCounter % sampleTicks == 0)) {
                     double base = hp * FUEL_SAMPLE_COST_PER_HP;
-                    double modeCost = base * modeFuelMul;
+                    double altCost = base * thrustAltFactor;
+                    double modeCost = altCost * modeFuelMul;
                     double zoneCost = modeCost * fuelZoneMul;
                     int cost = (int)Math.ceil(zoneCost * r);
                     if (cost > 0) {
