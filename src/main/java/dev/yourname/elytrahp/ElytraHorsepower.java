@@ -26,10 +26,16 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.text.DecimalFormat;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.logging.Level;
 
 public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private NamespacedKey HP_KEY;
@@ -220,6 +226,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         LIFE_REPAIRED_KEY = new NamespacedKey(this, "life_repaired_min");
 
         saveDefaultConfig();
+        saveBundledDefaultConfig();
         reloadFromConfig();
 
         Bukkit.getPluginManager().registerEvents(this, this);
@@ -439,6 +446,24 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 updateGForceDamage(p, velBt, sampleTicks);
             }
         }, 1L, 1L);
+    }
+
+    private void saveBundledDefaultConfig() {
+        File outFile = new File(getDataFolder(), "default_config.yml");
+        try (InputStream in = getResource("config.yml")) {
+            if (in == null) {
+                getLogger().warning("config.yml resource not found; default_config.yml was not saved");
+                return;
+            }
+            File parent = outFile.getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                getLogger().warning("Could not create plugin data directory for default_config.yml");
+                return;
+            }
+            Files.copy(in, outFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException ex) {
+            getLogger().log(Level.SEVERE, "Failed to save default_config.yml", ex);
+        }
     }
 
     // Commands
