@@ -2,6 +2,7 @@ package dev.yourname.elytrahp;
 
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.attribute.Attribute;
@@ -13,6 +14,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
@@ -54,6 +56,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private static final double DEFAULT_SEA_LEVEL_Y = 64.0;
     private static final double DEFAULT_CDA_BASE_M2 = 0.70;
     private static final double DEFAULT_DRAG_MULTIPLIER = 1.0;
+    private static final double VANILLA_SPEED_CAP_BT = 3.92; // blocks per tick (vanilla velocity cap)
+    private static final double TELEPORT_SPEED_FACTOR = 3.0; // allow up to 3x vanilla cap
 
     // --- Vanilla damping neutralizer defaults ---
     private static final boolean DEFAULT_NEUTRALIZE_VANILLA_DRAG = true;
@@ -456,7 +460,23 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     double dragMag = Math.min(dvDrag_bt, newVel.length());
                     if (dragMag > 0) newVel.subtract(dirVel.multiply(dragMag));
                 }
-                p.setVelocity(newVel);
+
+                double desiredSpeedBt = newVel.length();
+                Vector desiredDir = desiredSpeedBt > 1e-6 ? newVel.clone().normalize() : dirFacing.clone();
+                double maxDesiredBt = VANILLA_SPEED_CAP_BT * TELEPORT_SPEED_FACTOR;
+                if (desiredSpeedBt > maxDesiredBt) {
+                    desiredSpeedBt = maxDesiredBt;
+                }
+
+                double appliedSpeedBt = Math.min(desiredSpeedBt, VANILLA_SPEED_CAP_BT);
+                Vector appliedVelocity = desiredDir.clone().multiply(appliedSpeedBt);
+                double extraDistanceBt = desiredSpeedBt - appliedSpeedBt;
+
+                p.setVelocity(appliedVelocity);
+                if (extraDistanceBt > 1e-6 && desiredDir.lengthSquared() > 0) {
+                    Location loc = p.getLocation().clone().add(desiredDir.clone().multiply(extraDistanceBt));
+                    p.teleport(loc, PlayerTeleportEvent.TeleportCause.PLUGIN);
+                }
 
                 // fuel consumption per 0.2s
                 if (FUEL_ENABLED && engine != null && (tickCounter % sampleTicks == 0)) {
@@ -484,7 +504,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 }
 
                 // g-force damage per 0.2s
-                updateGForceDamage(p, velBt, sampleTicks);
+                Vector effectiveVelocityForG = desiredDir.clone().multiply(desiredSpeedBt);
+                updateGForceDamage(p, effectiveVelocityForG, sampleTicks);
             }
         }, 1L, 1L);
     }
