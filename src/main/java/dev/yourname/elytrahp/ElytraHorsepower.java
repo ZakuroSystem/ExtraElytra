@@ -102,6 +102,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private double GFORCE_WARN_INTERVAL_SEC;
     private String GFORCE_WARN_SOUND;
     private String GFORCE_WARN_ACTIONBAR;
+    private final Set<UUID> GFORCE_DAMAGE_IMMUNE = new HashSet<>();
 
     // g-damage table
     private static class GStep { double g; double dmg; GStep(double g, double dmg){this.g=g; this.dmg=dmg;} }
@@ -1308,6 +1309,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
         if (gForce < GFORCE_DAMAGE_START_G) return;
 
+        if (GFORCE_DAMAGE_IMMUNE.contains(id)) return;
+
         double dmg = computeDamageFromTable(gForce);
         if (dmg <= 0) return;
 
@@ -1440,6 +1443,16 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         GFORCE_SAMPLE_SECONDS = getConfig().getDouble("gforce.sample_seconds", DEFAULT_GFORCE_SAMPLE_SECONDS);
         GFORCE_KILL_CREATIVE = getConfig().getBoolean("gforce.kill_in_creative", DEFAULT_GFORCE_KILL_CREATIVE);
         GFORCE_DAMAGE_START_G = getConfig().getDouble("gforce.damage_start_g", DEFAULT_GFORCE_DAMAGE_START_G);
+        GFORCE_DAMAGE_IMMUNE.clear();
+        List<String> immune = getConfig().getStringList("gforce.damage_immunity_uuids");
+        for (String raw : immune) {
+            if (raw == null || raw.trim().isEmpty()) continue;
+            try {
+                GFORCE_DAMAGE_IMMUNE.add(UUID.fromString(raw.trim()));
+            } catch (IllegalArgumentException ex) {
+                getLogger().log(Level.WARNING, "Invalid UUID in gforce.damage_immunity_uuids: " + raw);
+            }
+        }
         GFORCE_WARN_ENABLED = getConfig().getBoolean("gforce.warn.enabled", DEFAULT_GFORCE_WARN_ENABLED);
         GFORCE_WARN_THRESHOLD_G = getConfig().getDouble("gforce.warn.threshold_g", DEFAULT_GFORCE_WARN_THRESHOLD_G);
         GFORCE_WARN_INTERVAL_SEC = getConfig().getDouble("gforce.warn.interval_sec", DEFAULT_GFORCE_WARN_INTERVAL_SEC);
