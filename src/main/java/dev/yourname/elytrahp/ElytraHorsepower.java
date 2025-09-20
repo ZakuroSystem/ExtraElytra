@@ -58,7 +58,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private static final double DEFAULT_CDA_BASE_M2 = 0.70;
     private static final double DEFAULT_DRAG_MULTIPLIER = 1.0;
     private static final double VANILLA_SPEED_CAP_BT = 3.92; // blocks per tick (vanilla velocity cap)
-    private static final double TELEPORT_SPEED_FACTOR = 3.0; // allow up to 3x vanilla cap
 
     // --- Vanilla damping neutralizer defaults ---
     private static final boolean DEFAULT_NEUTRALIZE_VANILLA_DRAG = true;
@@ -476,10 +475,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
                 double desiredSpeedBt = newVel.length();
                 Vector desiredDir = desiredSpeedBt > 1e-6 ? newVel.clone().normalize() : dirFacing.clone();
-                double maxDesiredBt = VANILLA_SPEED_CAP_BT * TELEPORT_SPEED_FACTOR;
-                if (desiredSpeedBt > maxDesiredBt) {
-                    desiredSpeedBt = maxDesiredBt;
-                }
 
                 double appliedSpeedBt = Math.min(desiredSpeedBt, VANILLA_SPEED_CAP_BT);
                 Vector appliedVelocity = desiredDir.clone().multiply(appliedSpeedBt);
