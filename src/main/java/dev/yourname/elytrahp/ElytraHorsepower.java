@@ -219,6 +219,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private final Map<UUID, Long> lastBoostUse = new HashMap<>();
     private final Map<UUID, Double> lifeTickFraction = new HashMap<>();
     private final Map<UUID, Long> engineHoldStartTick = new HashMap<>();
+    private final Map<UUID, Long> forcedGlideUntilTick = new HashMap<>();
     private static final long STATUS_INTERVAL_MS = 3000L;
     private long tickCounter = 0L;
 
@@ -254,12 +255,24 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
             for (Player p : Bukkit.getOnlinePlayers()) {
                 UUID playerId = p.getUniqueId();
-                if (!p.isGliding()) {
+                boolean gliding = p.isGliding();
+                Long forcedUntil = forcedGlideUntilTick.get(playerId);
+                if (!gliding) {
+                    if (forcedUntil != null && forcedUntil >= tickCounter) {
+                        gliding = true;
+                    } else {
+                        forcedGlideUntilTick.remove(playerId);
+                    }
+                }
+                if (!gliding) {
                     velHistoryMps.remove(playerId);
                     engineHoldStartTick.remove(playerId);
                     lastTickLocation.remove(playerId);
                     effectiveVelocityBt.remove(playerId);
                     continue;
+                }
+                if (forcedUntil != null && forcedUntil < tickCounter) {
+                    forcedGlideUntilTick.remove(playerId);
                 }
 
                 // mass from scale
@@ -499,6 +512,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 if (extraDistanceBt > 1e-6 && desiredDir.lengthSquared() > 0) {
                     Location loc = p.getLocation().clone().add(desiredDir.clone().multiply(extraDistanceBt));
                     p.teleport(loc, PlayerTeleportEvent.TeleportCause.PLUGIN);
+                    p.setGliding(true);
+                    forcedGlideUntilTick.put(playerId, tickCounter + 2);
                 }
 
                 effectiveVelocityBt.put(playerId, desiredDir.clone().multiply(desiredSpeedBt));
@@ -786,6 +801,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         engineHoldStartTick.remove(id);
         lastTickLocation.remove(id);
         effectiveVelocityBt.remove(id);
+        forcedGlideUntilTick.remove(id);
     }
 
     // Right click to charge
@@ -1575,6 +1591,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         activeBoosts.clear();
         flightModes.clear();
         engineHoldStartTick.clear();
+        forcedGlideUntilTick.clear();
 
         // eco
         ECO_ENABLED = getConfig().getBoolean("eco.enabled", true);
