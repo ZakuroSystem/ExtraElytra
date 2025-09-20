@@ -14,7 +14,6 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
-import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
@@ -122,6 +121,11 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         BoostItem item;
     }
 
+    private static class BoostSelection {
+        BoostItem item;
+        EquipmentSlot sourceSlot;
+    }
+
     private enum FlightMode {
         NORMAL,
         ECO,
@@ -219,7 +223,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private final Map<UUID, Long> lastBoostUse = new HashMap<>();
     private final Map<UUID, Double> lifeTickFraction = new HashMap<>();
     private final Map<UUID, Long> engineHoldStartTick = new HashMap<>();
-    private final Map<UUID, Long> forcedGlideUntilTick = new HashMap<>();
     private static final long STATUS_INTERVAL_MS = 3000L;
     private long tickCounter = 0L;
 
@@ -256,23 +259,12 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             for (Player p : Bukkit.getOnlinePlayers()) {
                 UUID playerId = p.getUniqueId();
                 boolean gliding = p.isGliding();
-                Long forcedUntil = forcedGlideUntilTick.get(playerId);
-                if (!gliding) {
-                    if (forcedUntil != null && forcedUntil >= tickCounter) {
-                        gliding = true;
-                    } else {
-                        forcedGlideUntilTick.remove(playerId);
-                    }
-                }
                 if (!gliding) {
                     velHistoryMps.remove(playerId);
                     engineHoldStartTick.remove(playerId);
                     lastTickLocation.remove(playerId);
                     effectiveVelocityBt.remove(playerId);
                     continue;
-                }
-                if (forcedUntil != null && forcedUntil < tickCounter) {
-                    forcedGlideUntilTick.remove(playerId);
                 }
 
                 // mass from scale
@@ -514,22 +506,16 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     if (dragMag > 0) newVel.subtract(dirVel.multiply(dragMag));
                 }
 
-                double desiredSpeedBt = newVel.length();
-                Vector desiredDir = desiredSpeedBt > 1e-6 ? newVel.clone().normalize() : dirFacing.clone();
-
-                double appliedSpeedBt = Math.min(desiredSpeedBt, VANILLA_SPEED_CAP_BT);
-                Vector appliedVelocity = desiredDir.clone().multiply(appliedSpeedBt);
-                double extraDistanceBt = desiredSpeedBt - appliedSpeedBt;
-
-                p.setVelocity(appliedVelocity);
-                if (extraDistanceBt > 1e-6 && desiredDir.lengthSquared() > 0) {
-                    Location loc = p.getLocation().clone().add(desiredDir.clone().multiply(extraDistanceBt));
-                    p.teleport(loc, PlayerTeleportEvent.TeleportCause.PLUGIN);
-                    p.setGliding(true);
-                    forcedGlideUntilTick.put(playerId, tickCounter + 2);
+                Vector appliedVelocity = newVel;
+                double appliedSpeedBt = appliedVelocity.length();
+                if (appliedSpeedBt > VANILLA_SPEED_CAP_BT && appliedSpeedBt > 1e-6) {
+                    appliedVelocity = appliedVelocity.clone().normalize().multiply(VANILLA_SPEED_CAP_BT);
+                    appliedSpeedBt = VANILLA_SPEED_CAP_BT;
                 }
 
-                effectiveVelocityBt.put(playerId, desiredDir.clone().multiply(desiredSpeedBt));
+                p.setVelocity(appliedVelocity);
+
+                effectiveVelocityBt.put(playerId, appliedVelocity.clone());
 
                 // fuel consumption per 0.2s
                 if (FUEL_ENABLED && engine != null && (tickCounter % sampleTicks == 0)) {
@@ -557,7 +543,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 }
 
                 // g-force damage per 0.2s
-                Vector effectiveVelocityForG = desiredDir.clone().multiply(desiredSpeedBt);
+                Vector effectiveVelocityForG = appliedVelocity.clone();
                 updateGForceDamage(p, effectiveVelocityForG, sampleTicks);
             }
         }, 1L, 1L);
@@ -814,7 +800,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         engineHoldStartTick.remove(id);
         lastTickLocation.remove(id);
         effectiveVelocityBt.remove(id);
-        forcedGlideUntilTick.remove(id);
     }
 
     // Right click to charge
@@ -940,6 +925,37 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         for (ItemStack it : inv.getContents()) if (it != null && it.getType() == m) n += it.getAmount();
         return n;
     }
+
+    private int removeFromSlot(PlayerInventory inv, EquipmentSlot slot, Material m, int amount) {
+        if (amount <= 0) return 0;
+        ItemStack stack;
+        if (slot == EquipmentSlot.HAND) {
+            stack = inv.getItemInMainHand();
+        } else if (slot == EquipmentSlot.OFF_HAND) {
+            stack = inv.getItemInOffHand();
+        } else {
+            return 0;
+        }
+        if (stack == null || stack.getType() != m) return 0;
+        int take = Math.min(amount, stack.getAmount());
+        int newAmount = stack.getAmount() - take;
+        if (newAmount > 0) {
+            stack.setAmount(newAmount);
+            if (slot == EquipmentSlot.HAND) {
+                inv.setItemInMainHand(stack);
+            } else {
+                inv.setItemInOffHand(stack);
+            }
+        } else {
+            if (slot == EquipmentSlot.HAND) {
+                inv.setItemInMainHand(null);
+            } else {
+                inv.setItemInOffHand(null);
+            }
+        }
+        return take;
+    }
+
     private void removeItems(PlayerInventory inv, Material m, int amount) {
         for (int i=0; i<inv.getSize() && amount>0; i++) {
             ItemStack it = inv.getItem(i);
@@ -1113,13 +1129,20 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             return;
         }
         PlayerInventory inv = p.getInventory();
-        BoostItem chosen = selectBoostItem(p);
-        if (chosen == null) {
+        BoostSelection selection = selectBoostItem(p);
+        if (selection == null) {
             sendBoostRequirements(p);
             return;
         }
+        BoostItem chosen = selection.item;
         if (chosen.amount > 0) {
-            removeItems(inv, chosen.material, chosen.amount);
+            int remaining = chosen.amount;
+            if (selection.sourceSlot != null) {
+                remaining -= removeFromSlot(inv, selection.sourceSlot, chosen.material, remaining);
+            }
+            if (remaining > 0) {
+                removeItems(inv, chosen.material, remaining);
+            }
         }
         if (BOOST_CANCEL_IF_ECO) {
             FlightMode mode = getFlightMode(id);
@@ -1152,19 +1175,38 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         sendActionBarMessage(p, Component.text(msg.toString(), NamedTextColor.GOLD));
     }
 
-    private BoostItem selectBoostItem(Player p) {
+    private BoostSelection selectBoostItem(Player p) {
         if (BOOST_ITEMS.isEmpty()) return null;
         PlayerInventory inv = p.getInventory();
-        ItemStack off = inv.getItemInOffHand();
-        if (off != null && off.getType() != Material.AIR) {
-            BoostItem held = findBoostItem(off.getType());
-            if (held != null && (held.amount <= 0 || countItem(inv, held.material) >= held.amount)) {
-                return held;
+
+        ItemStack main = inv.getItemInMainHand();
+        if (main != null && main.getType() != Material.AIR) {
+            BoostItem heldMain = findBoostItem(main.getType());
+            if (heldMain != null && (heldMain.amount <= 0 || countItem(inv, heldMain.material) >= heldMain.amount)) {
+                BoostSelection sel = new BoostSelection();
+                sel.item = heldMain;
+                sel.sourceSlot = EquipmentSlot.HAND;
+                return sel;
             }
         }
+
+        ItemStack off = inv.getItemInOffHand();
+        if (off != null && off.getType() != Material.AIR) {
+            BoostItem heldOff = findBoostItem(off.getType());
+            if (heldOff != null && (heldOff.amount <= 0 || countItem(inv, heldOff.material) >= heldOff.amount)) {
+                BoostSelection sel = new BoostSelection();
+                sel.item = heldOff;
+                sel.sourceSlot = EquipmentSlot.OFF_HAND;
+                return sel;
+            }
+        }
+
         for (BoostItem item : BOOST_ITEMS) {
             if (item.amount <= 0 || countItem(inv, item.material) >= item.amount) {
-                return item;
+                BoostSelection sel = new BoostSelection();
+                sel.item = item;
+                sel.sourceSlot = null;
+                return sel;
             }
         }
         return null;
@@ -1604,7 +1646,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         activeBoosts.clear();
         flightModes.clear();
         engineHoldStartTick.clear();
-        forcedGlideUntilTick.clear();
 
         // eco
         ECO_ENABLED = getConfig().getBoolean("eco.enabled", true);
