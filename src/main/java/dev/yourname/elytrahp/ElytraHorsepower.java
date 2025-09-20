@@ -822,7 +822,14 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         boostUntilTick.put(id, now + durTicks);
         lastBoostUse.put(id, now);
         if (BOOST_SOUND != null && !BOOST_SOUND.isEmpty()) p.playSound(p.getLocation(), BOOST_SOUND, 1f, 1f);
-        sendActionBarMessage(p, Component.text("+20% 出力 (" + BOOST_DURATION_SEC + "s)", NamedTextColor.GOLD));
+        StringBuilder msg = new StringBuilder();
+        msg.append("BOOST ");
+        msg.append(formatMultiplierDelta(BOOST_HP_MULT)).append(" 出力 (")
+           .append(formatNumber(BOOST_DURATION_SEC)).append("s)");
+        if (Math.abs(BOOST_FUEL_MULT - 1.0) > 1e-4) {
+            msg.append(" / 燃料").append(formatMultiplierDelta(BOOST_FUEL_MULT));
+        }
+        sendActionBarMessage(p, Component.text(msg.toString(), NamedTextColor.GOLD));
     }
 
     private void handleEcoToggle(Player p) {
@@ -838,8 +845,39 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
             }
             ecoEnabled.put(id, true);
             if (ECO_SOUND_ON != null && !ECO_SOUND_ON.isEmpty()) p.playSound(p.getLocation(), ECO_SOUND_ON, 1f, 1f);
-            sendActionBarMessage(p, Component.text("ECO ON", NamedTextColor.GOLD));
+            String msg = "ECO ON: 推力" + formatMultiplierAbsolute(ECO_HP_MULT) +
+                         " / 燃料" + formatMultiplierAbsolute(ECO_FUEL_MULT);
+            sendActionBarMessage(p, Component.text(msg, NamedTextColor.GOLD));
         }
+    }
+
+    private String formatMultiplierDelta(double multiplier) {
+        return formatPercent((multiplier - 1.0) * 100.0, true);
+    }
+
+    private String formatMultiplierAbsolute(double multiplier) {
+        return formatPercent(multiplier * 100.0, false);
+    }
+
+    private String formatPercent(double value, boolean includeSign) {
+        if (Math.abs(value) < 0.005) value = 0.0;
+        double rounded = Math.abs(value - Math.round(value)) < 0.0001 ? Math.round(value) : Math.round(value * 10.0) / 10.0;
+        String text = (Math.abs(rounded - Math.round(rounded)) < 0.0001)
+            ? String.format("%.0f", Math.abs(rounded))
+            : String.format("%.1f", Math.abs(rounded));
+        if (!includeSign) {
+            return text + "%";
+        }
+        if (value > 0) return "+" + text + "%";
+        if (value < 0) return "-" + text + "%";
+        return "0%";
+    }
+
+    private String formatNumber(double value) {
+        if (Math.abs(value - Math.round(value)) < 0.0001) {
+            return String.format("%.0f", value);
+        }
+        return String.format("%.1f", value);
     }
 
     private void sendActionBarMessage(Player p, Component c) {
