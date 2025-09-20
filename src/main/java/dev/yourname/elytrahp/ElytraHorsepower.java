@@ -271,7 +271,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
                 // current velocity (use displacement between ticks if available)
                 Vector velBt = p.getVelocity();
-                Location prevLocation = lastTickLocation.get(id);
+                Location prevLocation = lastTickLocation.put(id, currentLocation.clone());
                 if (prevLocation != null && prevLocation.getWorld() == currentLocation.getWorld()) {
                     Vector displacement = currentLocation.toVector().subtract(prevLocation.toVector());
                     velBt = displacement;
@@ -492,7 +492,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 }
 
                 effectiveVelocityBt.put(id, desiredDir.clone().multiply(desiredSpeedBt));
-                lastTickLocation.put(id, p.getLocation().clone());
 
                 // fuel consumption per 0.2s
                 if (FUEL_ENABLED && engine != null && (tickCounter % sampleTicks == 0)) {
