@@ -211,8 +211,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
     // state
     private final Map<UUID, ArrayDeque<Vector>> velHistoryMps = new HashMap<>();
-    private final Map<UUID, Location> lastTickLocation = new HashMap<>();
-    private final Map<UUID, Vector> effectiveVelocityBt = new HashMap<>();
+    private final Map<UUID, Vector> lastDesiredVelocityBt = new HashMap<>();
     private final Map<UUID, Long> lastFuelNotify = new HashMap<>();
     private final Map<UUID, Long> lastLifeNotify = new HashMap<>();
     private final Map<UUID, Long> lastWarn = new HashMap<>();
@@ -263,8 +262,6 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 if (!gliding) {
                     velHistoryMps.remove(playerId);
                     engineHoldStartTick.remove(playerId);
-                    lastTickLocation.remove(playerId);
-                    effectiveVelocityBt.remove(playerId);
                     continue;
                 }
 
@@ -274,13 +271,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
                 Location currentLocation = p.getLocation();
 
-                // current velocity (use displacement between ticks if available)
+                // current velocity
                 Vector velBt = p.getVelocity();
-                Location prevLocation = lastTickLocation.put(playerId, currentLocation.clone());
-                if (prevLocation != null && prevLocation.getWorld() == currentLocation.getWorld()) {
-                    Vector displacement = currentLocation.toVector().subtract(prevLocation.toVector());
-                    velBt = displacement;
-                }
 
                 ItemStack engine = getEngineItem(p);
                 ActiveBoost activeBoost = activeBoosts.get(playerId);
@@ -292,16 +284,12 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 if (engine == null) {
                     engineHoldStartTick.remove(playerId);
                     setFlightMode(playerId, FlightMode.NORMAL);
-                    effectiveVelocityBt.remove(playerId);
                     lifeTickFraction.remove(playerId);
                     if (activeBoost != null) {
                         activeBoosts.remove(playerId);
                     }
-                    if (p.isGliding()) {
-                        p.setGliding(false);
-                    }
-                    Vector effectiveVelocityForG = velBt.clone();
-                    updateGForceDamage(p, effectiveVelocityForG, sampleTicks);
+                    lastDesiredVelocityBt.remove(playerId);
+                    updateGForceDamage(p, velBt.clone(), sampleTicks);
                     continue;
                 }
 
@@ -314,23 +302,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     }
                 }
 
-                Vector storedEffective = effectiveVelocityBt.get(playerId);
-                Vector physicsVelBt = velBt.clone();
-                if (storedEffective != null) {
-                    double actualLen = velBt.length();
-                    double storedLen = storedEffective.length();
-                    if (storedLen > 1e-6) {
-                        if (actualLen > storedLen * 0.5) {
-                            physicsVelBt = storedEffective.clone();
-                        } else {
-                            physicsVelBt = velBt.clone();
-                        }
-                    } else {
-                        physicsVelBt = velBt.clone();
-                    }
-                }
-
-                double speedBt = physicsVelBt.length();
+                double speedBt = velBt.length();
                 double speedMps = speedBt * 20.0;
                 if (speedMps < MIN_SPEED_MPS) speedMps = MIN_SPEED_MPS;
 
@@ -495,7 +467,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 // update velocity
                 Vector dirFacing = currentLocation.getDirection();
                 if (dirFacing.lengthSquared() > 1e-6) dirFacing.normalize();
-                Vector dirVel = speedBt > 1e-6 ? physicsVelBt.clone().normalize() : dirFacing.clone();
+                Vector dirVel = speedBt > 1e-6 ? velBt.clone().normalize() : dirFacing.clone();
 
                 double dvThrust_bt = (aThrustEff * DT) / 20.0;
                 double dvDrag_bt   = (aDrag   * DT) / 20.0;
@@ -503,15 +475,15 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 double maxDv_bt = (MAX_ACCEL_MPS2 * DT) / 20.0;
                 if (dvThrust_bt > maxDv_bt) dvThrust_bt = maxDv_bt;
 
-                Vector newVel = physicsVelBt.clone();
+                Vector newVel = velBt.clone();
                 if (dvThrust_bt > 0 && dirFacing.lengthSquared() > 0) newVel.add(dirFacing.multiply(dvThrust_bt));
                 if (dvDrag_bt   > 0 && dirVel.lengthSquared() > 0) {
                     double dragMag = Math.min(dvDrag_bt, newVel.length());
                     if (dragMag > 0) newVel.subtract(dirVel.multiply(dragMag));
                 }
 
-                Vector desiredVelocity = newVel;
-                Vector appliedVelocity = desiredVelocity;
+                Vector desiredVelocity = newVel.clone();
+                Vector appliedVelocity = desiredVelocity.clone();
                 Vector teleportDelta = new Vector();
                 double desiredSpeedBt = desiredVelocity.length();
                 if (desiredSpeedBt > VANILLA_SPEED_CAP_BT && desiredSpeedBt > 1e-6) {
@@ -526,10 +498,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 if (teleportDelta.lengthSquared() > 1e-6) {
                     Location teleportTarget = currentLocation.clone().add(teleportDelta);
                     p.teleport(teleportTarget, PlayerTeleportEvent.TeleportCause.PLUGIN);
-                    lastTickLocation.put(playerId, teleportTarget.clone());
                 }
 
-                effectiveVelocityBt.put(playerId, desiredVelocity.clone());
+                lastDesiredVelocityBt.put(playerId, desiredVelocity.clone());
 
                 // fuel consumption per 0.2s
                 if (FUEL_ENABLED && engine != null && (tickCounter % sampleTicks == 0)) {
@@ -557,8 +528,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 }
 
                 // g-force damage per 0.2s
-                Vector effectiveVelocityForG = desiredVelocity.clone();
-                updateGForceDamage(p, effectiveVelocityForG, sampleTicks);
+                updateGForceDamage(p, desiredVelocity.clone(), sampleTicks);
             }
         }, 1L, 1L);
     }
@@ -666,8 +636,9 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                         return true;
                     }
                     double hp = extractHorsepower(engine);
-                    Vector effective = effectiveVelocityBt.get(p.getUniqueId());
-                    double speedKmh = (effective != null ? effective.length() : p.getVelocity().length()) * 20.0 * 3.6;
+                    Vector storedVel = lastDesiredVelocityBt.get(p.getUniqueId());
+                    Vector displayVel = (storedVel != null) ? storedVel : p.getVelocity();
+                    double speedKmh = displayVel.length() * 20.0 * 3.6;
                     int fuel = displayFuel(engine);
                     int cap = getFuelCap(engine);
                     int total = getLifeTotal(engine);
@@ -812,8 +783,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         UUID id = event.getPlayer().getUniqueId();
         velHistoryMps.remove(id);
         engineHoldStartTick.remove(id);
-        lastTickLocation.remove(id);
-        effectiveVelocityBt.remove(id);
+        lastDesiredVelocityBt.remove(id);
     }
 
     // Right click to charge
