@@ -987,10 +987,18 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         ItemMeta meta = is.getItemMeta();
         if (meta == null) return 0.0;
         PersistentDataContainer pdc = meta.getPersistentDataContainer();
-        Double v = pdc.get(FUEL_KEY, PersistentDataType.DOUBLE);
-        if (v != null) return Math.max(0.0, v);
-        Integer legacy = pdc.get(FUEL_KEY, PersistentDataType.INTEGER);
-        if (legacy != null) return Math.max(0.0, legacy.doubleValue());
+        if (pdc.has(FUEL_KEY, PersistentDataType.DOUBLE)) {
+            Double v = pdc.get(FUEL_KEY, PersistentDataType.DOUBLE);
+            if (v != null) {
+                return Math.max(0.0, v);
+            }
+        }
+        if (pdc.has(FUEL_KEY, PersistentDataType.INTEGER)) {
+            Integer legacy = pdc.get(FUEL_KEY, PersistentDataType.INTEGER);
+            if (legacy != null) {
+                return Math.max(0.0, legacy.doubleValue());
+            }
+        }
         return 0.0;
     }
     private void setFuel(ItemStack is, double value) {
