@@ -1425,12 +1425,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         ItemStack main = p.getInventory().getItemInMainHand();
         if (isEngine(main)) return main;
         ItemStack off = p.getInventory().getItemInOffHand();
-        if (isEngine(off)) {
-            if (main == null || main.getType() == Material.AIR) {
-                return off;
-            }
-            return null;
-        }
+        if (isEngine(off)) return off;
         return null;
     }
 
