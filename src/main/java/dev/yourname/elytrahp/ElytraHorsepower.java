@@ -792,22 +792,34 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         Action a = e.getAction();
         if (e.getHand() != EquipmentSlot.HAND) return;
         Player p = e.getPlayer();
-        ItemStack engine = getEngineItem(p);
+        PlayerInventory inv = p.getInventory();
+        ItemStack main = inv.getItemInMainHand();
+        ItemStack off = inv.getItemInOffHand();
+        boolean engineInMain = isEngine(main);
+        boolean engineInOff = isEngine(off);
+        ItemStack engine = engineInMain ? main : (engineInOff ? off : null);
         if (engine == null) return;
+
+        boolean mainHandEmpty = main == null || main.getType() == Material.AIR;
+        boolean canUseRightClick = engineInMain || (engineInOff && mainHandEmpty);
 
         // gliding actions
         if (p.isGliding()) {
             if (a == Action.LEFT_CLICK_AIR && BOOST_ENABLED) {
                 handleBoost(p, engine);
             } else if (a == Action.RIGHT_CLICK_AIR && ECO_ENABLED) {
-                handleEcoToggle(p);
+                if (canUseRightClick) {
+                    handleEcoToggle(p);
+                }
             }
             return;
         }
 
         if (!(a == Action.RIGHT_CLICK_AIR || a == Action.RIGHT_CLICK_BLOCK)) return;
 
-        PlayerInventory inv = p.getInventory();
+        if (!canUseRightClick) {
+            return;
+        }
 
         if (LIFE_ENABLED) {
             int total = getLifeTotal(engine);
