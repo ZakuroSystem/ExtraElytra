@@ -1,4 +1,4 @@
-# ElytraHorsepower (Paper 1.21.1) – v1.4.0
+# ElytraHorsepower (Paper 1.21.9) – v1.4.0
 
 Build: `mvn -q -DskipTests package`
 
