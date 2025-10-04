@@ -5,12 +5,12 @@ api-version: '1.21'
 authors: ["grapelemon"]
 commands:
   giveengine:
-    description: Give an Elytra engine item with specified horsepower.
-    usage: /giveengine <hp>
+    description: Give an Elytra engine item with specified horsepower, life, and fuel capacity.
+    usage: /giveengine <hp> <life_min> <fuel_capacity>
     permission: elytrahp.giveengine
   elytrahp:
-    description: Admin commands (reload)
-    usage: /elytrahp reload
+    description: Admin commands (reload, life, fuel)
+    usage: /elytrahp reload | /elytrahp life ... | /elytrahp fuel ...
     permission: elytrahp.admin
 permissions:
   elytrahp.giveengine:
