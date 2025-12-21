@@ -23,7 +23,9 @@ import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Vector;
+import org.bukkit.event.entity.EntityToggleGlideEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.scheduler.BukkitTask;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -223,6 +225,7 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
     private final Map<UUID, Long> lastBoostUse = new HashMap<>();
     private final Map<UUID, Double> lifeTickFraction = new HashMap<>();
     private final Map<UUID, Long> engineHoldStartTick = new HashMap<>();
+    private BukkitTask physicsTask;
     private static final long STATUS_INTERVAL_MS = 3000L;
     private long tickCounter = 0L;
 
@@ -252,9 +255,24 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
 
         Bukkit.getPluginManager().registerEvents(this, this);
 
-        Bukkit.getScheduler().runTaskTimer(this, () -> {
+        startPhysicsTaskIfNeeded();
+    }
+
+    @Override
+    public void onDisable() {
+        stopPhysicsTask();
+    }
+
+    private void startPhysicsTaskIfNeeded() {
+        if (physicsTask != null) return;
+        boolean hasActiveGlider = Bukkit.getOnlinePlayers().stream()
+                .anyMatch(p -> p.isGliding() && getEngineItem(p) != null);
+        if (!hasActiveGlider) return;
+
+        physicsTask = Bukkit.getScheduler().runTaskTimer(this, () -> {
             tickCounter++;
             final int sampleTicks = Math.max(1, (int)Math.round(GFORCE_SAMPLE_SECONDS / DT)); // normally 4
+            boolean anyActive = false;
 
             for (Player p : Bukkit.getOnlinePlayers()) {
                 UUID playerId = p.getUniqueId();
@@ -264,6 +282,8 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                     engineHoldStartTick.remove(playerId);
                     continue;
                 }
+
+                anyActive = true;
 
                 // mass from scale
                 double scale = getScaleOrDefault(p, 1.0);
@@ -530,7 +550,19 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
                 // g-force damage per 0.2s
                 updateGForceDamage(p, desiredVelocity.clone(), sampleTicks);
             }
+
+            if (!anyActive) {
+                stopPhysicsTask();
+            }
+
         }, 1L, 1L);
+    }
+
+    private void stopPhysicsTask() {
+        if (physicsTask != null) {
+            physicsTask.cancel();
+            physicsTask = null;
+        }
     }
 
     private void saveBundledDefaultConfig() {
@@ -784,6 +816,15 @@ public final class ElytraHorsepower extends JavaPlugin implements Listener {
         velHistoryMps.remove(id);
         engineHoldStartTick.remove(id);
         lastDesiredVelocityBt.remove(id);
+    }
+
+    @EventHandler
+    public void onToggleGlide(EntityToggleGlideEvent event) {
+        if (!(event.getEntity() instanceof Player)) return;
+        Player player = (Player) event.getEntity();
+        if (event.isGliding() && getEngineItem(player) != null) {
+            startPhysicsTaskIfNeeded();
+        }
     }
 
     // Right click to charge
